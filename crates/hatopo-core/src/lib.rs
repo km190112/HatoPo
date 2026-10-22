@@ -6,19 +6,23 @@
 //!
 //! exe・DLL・CLI はこのクレートを呼ぶだけの殻にする。
 
+mod directory;
 mod error;
 mod id;
 mod loft;
 mod model;
 mod settings;
+mod status;
 mod when;
 
+pub use directory::{DIRECTORY_FILE, Directory, Member};
 pub use error::Error;
 pub use loft::{Broken, Filter, Inbox, Loft};
 pub use model::{
     Archived, CloseReason, Closed, Kind, NewNotice, Notice, NoticeEdit, Origin, Target,
 };
-pub use settings::Settings;
+pub use settings::{MAX_POLL_SECONDS, MAX_REMIND_MINUTES, MIN_POLL_SECONDS, Settings};
+pub use status::{ClientStatus, read_all_status, read_status, touch};
 pub use when::{DayEdge, parse_date, parse_when};
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -22,16 +22,19 @@
 
 ```
  管理者・ツール作者                         利用者の PC (何台でも)
-   Excel VBA ── hatopo.dll ─┐                HatoPo.exe (常駐)
-   bat / PS ── hatopo-cli ──┤                 ├ マスコット / タスクトレイ / トースト
+   管理画面 HatoPoAdmin ────┐                HatoPo.exe (常駐)
+   Excel VBA ── hatopo.dll ─┤                 ├ マスコット / タスクトレイ / トースト
+   bat / PS ── hatopo-cli ──┤
                             ▼                 └ 一覧 → ファイルを開く → 完了
           \\server\HatoLoft\  ◀── 60 秒ごとに自分宛てだけを見に行く ──┘
-            HatoPo.exe, hatopo.dll, hatopo-cli.exe, settings.json
+            HatoPo.exe, HatoPoAdmin.exe, hatopo.dll, hatopo-cli.exe
+            settings.json, directory.json (名簿)   … 管理画面だけが書く
             character_icon\HatoPoBlue\
             broadcast\                    全員へのお知らせ
             PigeonHole\device\<PC名>\     その PC への便り
             PigeonHole\user\<ユーザー名>\  その人への便り
             archive\2026-10\              完了・期限切れ・削除した便り
+            status\user\  status\device\  各 PC の HatoPo が書く最終アクセス・版
 ```
 
 - **通知 1 件 = JSON ファイル 1 つ。** データベースを使わないので、遅い共有フォルダでも壊れにくい
@@ -47,14 +50,15 @@
 
 1. [Releases](https://github.com/km190112/HatoPo/releases/latest) から `HatoPo-vX.Y.Z.zip` を落として展開する
 2. 中の `HatoLoft` フォルダを共有フォルダに置く (例: `\\server\HatoLoft`)。**利用者全員が読み書きできる**ようにする
-3. **プログラム 3 本 (`HatoPo.exe` `hatopo.dll` `hatopo-cli.exe`) だけは、管理者しか書き換えられないようにする** (下記)
-4. 必要なら `settings.json` を書き換える (下記)
+3. `HatoPoAdmin.exe` を開き、［設定］で確認の間隔などを決めて保存し、［ユーザー］［端末］で名簿を作る (下記「管理画面」)
+4. **プログラム 4 本 (`HatoPo.exe` `HatoPoAdmin.exe` `hatopo.dll` `hatopo-cli.exe`) と `settings.json` `directory.json` は、管理者しか書き換えられないようにする** (下記)
 
-#### プログラムを管理者だけが書き換えられるようにする
+#### プログラムと設定を管理者だけが書き換えられるようにする
 
 各 PC は共有の `HatoPo.exe` が変わると、**利用者の操作なしに**入れ替えて起動します。
 共有に書ける人が誰でも `HatoPo.exe` を差し替えられると、全員の PC で任意のプログラムが動いてしまいます。
-通知 (JSON) は全員が書ける必要がありますが、プログラム 3 本は管理者だけが書けるようにしてください。
+通知 (JSON)・`archive\`・`status\` は全員が書ける必要がありますが、プログラム 4 本と設定 2 つは管理者だけが書けるようにしてください。
+`settings.json` と `directory.json` は手で編集せず、管理画面から保存します (保存の前に値を確かめ、同時に直した管理者がいれば止めます)。
 
 エクスプローラーなら: ファイルを右クリック →［プロパティ］→［セキュリティ］→［詳細設定］→［継承の無効化］
 → 利用者のグループから「変更」「書き込み」を外し、「読み取りと実行」だけを残す。
@@ -63,7 +67,7 @@
 
 ```bat
 cd /d \\server\HatoLoft
-for %f in (HatoPo.exe hatopo.dll hatopo-cli.exe) do icacls %f /inheritance:r /grant:r "管理者のグループ:F" "利用者のグループ:RX"
+for %f in (HatoPo.exe HatoPoAdmin.exe hatopo.dll hatopo-cli.exe settings.json directory.json) do icacls %f /inheritance:r /grant:r "管理者のグループ:F" "利用者のグループ:RX"
 ```
 
 確かめ方: 利用者のアカウントで `HatoPo.exe` を別名で上書きしようとして「アクセスが拒否されました」になること。
@@ -80,6 +84,22 @@ for %f in (HatoPo.exe hatopo.dll hatopo-cli.exe) do icacls %f /inheritance:r /gr
 - 共有に繋がらないときも、最後に読めた一覧を出し続けます (鳩が「？」の顔になります)
 - 自動起動をやめるとき: タスクトレイの鳩を右クリック →「ログオン時に自動で起動する」のチェックを外す (付け直せば再登録)
 - すっかりやめるとき: `%LOCALAPPDATA%\HatoPo\HatoPo.exe --uninstall` で自動起動とトーストの登録を外し、フォルダを消す
+
+## 管理画面 (HatoPoAdmin.exe)
+
+鳩の巣に置いた `HatoPoAdmin.exe` を開くと、その鳩の巣を管理します (別の場所に置いたときは上の欄で選ぶ)。
+
+| 画面 | できること |
+|---|---|
+| 通知 | 出ている通知の一覧 (種類・状態・文字で絞り込み)。行を押すと内容を直す・削除する。まとめて送った通知は「何人中何人完了」と、誰がいつ完了したかが出る |
+| 新しく送る | 一斉・端末・ユーザーを選んで送る。名簿から何人でも選べ、名簿に無い名前も足せる。開始・終了・依頼期限は日付と時刻で選ぶ |
+| 完了の記録 | 月ごとに、閉じた日時・理由 (完了 / 期限切れ / 削除)・誰が (ユーザー@PC)・宛先・件名 |
+| ユーザー / 端末 | 名簿の追加・編集・削除 (行を押す)。最終アクセス・最後に完了した日・最後に使った PC (端末なら最後のユーザー)・動いている HatoPo の版・未完了の数。HatoPo は動いているが名簿に無い名前も薄く出るので、押せば名簿に足せる |
+| 設定 | キャラクター・確認の間隔・催促の間隔・マスコットの表示。範囲外の値は保存させない。空のフォルダに鳩の巣を作ることもできる |
+
+- 最終アクセスが 7 日より前の人・PC と、管理画面より古い版の HatoPo は黄色で出ます (要件の「未更新の端末」はここで分かります)
+- 名簿は管理者 2 人が同時に直しても壊れません (後から保存した方が「先に変更されました」と止まります)
+- 最終アクセスは、各 PC の HatoPo が起動時・15 分ごと・完了したときに `status\` へ書いたものです
 
 ## 通知の出し方
 
@@ -168,7 +188,7 @@ hatopo-cli archive 2026-10
 ## 知っておいてほしいこと
 
 - **共有の `HatoPo.exe` を書き換えられる人は、全員の PC で任意のプログラムを動かせます** (自動更新のため)。
-  上の「プログラムを管理者だけが書き換えられるようにする」を必ず行ってください
+  上の「プログラムと設定を管理者だけが書き換えられるようにする」を必ず行ってください
 - **共有フォルダに書ける人は、誰でも通知を作れ、任意のファイルや exe へのリンクを置けます。**
   利用者どうしが信頼できる職場で使う前提です (リンクの種類は制限していません)
 - 利用者の名前・PC 名は Windows のログオン名 (`%USERNAME%`) とコンピューター名 (`%COMPUTERNAME%`) です。大文字小文字は区別しません
@@ -189,6 +209,7 @@ pwsh -File scripts\package.ps1 -Version v0.1.0
 | `hatopo-app` | `HatoPo.exe` | マスコット・一覧・トレイ・トースト・導入と自己更新 |
 | `hatopo-dll` | `hatopo.dll` | VBA 用 (UTF-16 BSTR で受け渡し、panic で Excel を落とさない) |
 | `hatopo-cli` | `hatopo-cli.exe` | 管理者用コマンド |
+| `hatopo-admin` | `HatoPoAdmin.exe` | 管理画面 (通知・完了の記録・名簿・設定) |
 
 VBA モジュールは `vba/HatoPo.src.txt` (UTF-8) を編集し、Shift-JIS + CRLF の `vba/HatoPo.bas` を作り直します
 (`scripts/check_bas.ps1` が一致を確かめます)。

@@ -115,6 +115,50 @@ impl Loft {
         now: NaiveDateTime,
     ) -> Result<Notice> {
         self.check_online()?;
+        self.add_one(target, n, by, now, None)
+    }
+
+    /// 同じ内容を複数の宛先へ送る (1 宛先 1 ファイル)。2 件以上なら同じ組 (`group`) にして、
+    /// あとで「誰が完了したか」をまとめて見られるようにする。
+    ///
+    /// 入力は全部確かめてから書き始める。書いている途中で失敗したら、それまでに作った分の件数を添えて返す。
+    pub fn add_many(
+        &self,
+        targets: &[Target],
+        n: &NewNotice,
+        by: &Origin,
+        now: NaiveDateTime,
+    ) -> Result<Vec<Notice>> {
+        self.check_online()?;
+        if targets.is_empty() {
+            return Err(Error::Invalid("宛先が選ばれていません。".into()));
+        }
+        validate(n)?;
+        let group = (targets.len() > 1).then(|| format!("g{}", new_id(now)));
+        let mut made = Vec::with_capacity(targets.len());
+        for t in targets {
+            match self.add_one(t, n, by, now, group.clone()) {
+                Ok(x) => made.push(x),
+                Err(e) => {
+                    return Err(Error::Invalid(format!(
+                        "{} 件中 {} 件を作ったところで止まりました ({t} への書き込みに失敗): {e}",
+                        targets.len(),
+                        made.len()
+                    )));
+                }
+            }
+        }
+        Ok(made)
+    }
+
+    fn add_one(
+        &self,
+        target: &Target,
+        n: &NewNotice,
+        by: &Origin,
+        now: NaiveDateTime,
+        group: Option<String>,
+    ) -> Result<Notice> {
         let (title, urls) = validate(n)?;
         let dir = self.dir_for(target);
         fs::create_dir_all(&dir).map_err(io(&dir))?;
@@ -140,6 +184,7 @@ impl Loft {
             end_at: n.end_at,
             updated_at: None,
             updated_by: None,
+            group,
         };
         write_atomic(&dir.join(format!("{}.json", notice.id)), &to_json(&notice)?)?;
         Ok(notice)
@@ -296,12 +341,7 @@ impl Loft {
     /// `archive\yyyy-MM\` の中身 (管理者が「誰が完了したか」を見る用)。
     pub fn archived(&self, month: &str) -> Result<Vec<Archived>> {
         self.check_online()?;
-        if !(month.len() == 7
-            && month
-                .chars()
-                .enumerate()
-                .all(|(i, c)| if i == 4 { c == '-' } else { c.is_ascii_digit() }))
-        {
+        if !is_month(month) {
             return Err(Error::Invalid(format!(
                 "月は 2026-10 の形で指定してください (「{month}」)。"
             )));
@@ -314,6 +354,57 @@ impl Loft {
         }
         out.sort_by_key(|a| a.closed.at);
         Ok(out)
+    }
+
+    /// `archive\` の下にある月 (`2026-10` の形) を新しい順に。
+    pub fn archive_months(&self) -> Result<Vec<String>> {
+        self.check_online()?;
+        let base = self.root.join("archive");
+        let mut v: Vec<String> = match fs::read_dir(&base) {
+            Ok(rd) => rd
+                .flatten()
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                .filter_map(|e| e.file_name().to_str().map(str::to_string))
+                .filter(|m| is_month(m))
+                .collect(),
+            Err(e) if e.kind() == ErrorKind::NotFound => Vec::new(),
+            Err(e) => {
+                return Err(Error::Io {
+                    path: base,
+                    source: e,
+                });
+            }
+        };
+        v.sort_by(|a, b| b.cmp(a));
+        Ok(v)
+    }
+
+    /// 同じ組の通知の、まだ出ているもの (未完了) と archive に移ったもの (完了・期限切れ・削除)。
+    /// archive は組を作った月から今月までを見る。
+    pub fn group_status(
+        &self,
+        group: &str,
+        created: NaiveDateTime,
+        now: NaiveDateTime,
+    ) -> Result<(Vec<Notice>, Vec<Archived>)> {
+        let (active, _) = self.find(&Filter::default())?;
+        let active: Vec<Notice> = active
+            .into_iter()
+            .filter(|n| n.group.as_deref() == Some(group))
+            .collect();
+        let from = created.format("%Y-%m").to_string();
+        let to = now.format("%Y-%m").to_string();
+        let mut closed = Vec::new();
+        for m in self.archive_months()? {
+            if m >= from && m <= to {
+                closed.extend(
+                    self.archived(&m)?
+                        .into_iter()
+                        .filter(|a| a.notice.group.as_deref() == Some(group)),
+                );
+            }
+        }
+        Ok((active, closed))
     }
 
     /// broadcast と PigeonHole の下の宛先フォルダすべて。
@@ -357,6 +448,14 @@ impl Loft {
         }
         Err(Error::NotFound { id: id.into() })
     }
+}
+
+/// `2026-10` の形か。archive の月フォルダ名に使う (パスを壊す文字を通さない)。
+fn is_month(m: &str) -> bool {
+    m.len() == 7
+        && m.chars()
+            .enumerate()
+            .all(|(i, c)| if i == 4 { c == '-' } else { c.is_ascii_digit() })
 }
 
 fn sort_for_display(v: &mut [Notice]) {
@@ -414,7 +513,7 @@ fn read_notice(path: &Path) -> Result<Notice> {
     read_json(path)
 }
 
-fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
+pub(crate) fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     let bytes = fs::read(path).map_err(|e| match e.kind() {
         ErrorKind::NotFound => Error::NotFound {
             id: path
@@ -434,7 +533,7 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     })
 }
 
-fn to_json<T: serde::Serialize>(v: &T) -> Result<Vec<u8>> {
+pub(crate) fn to_json<T: serde::Serialize>(v: &T) -> Result<Vec<u8>> {
     let mut s = serde_json::to_vec_pretty(v).map_err(|e| Error::Invalid(e.to_string()))?;
     s.push(b'\n');
     Ok(s)
@@ -467,10 +566,11 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 /// `.{id}.lock` を排他作成して持つ。落ちたら Drop で消す。
-struct Lock(PathBuf);
+pub(crate) struct Lock(PathBuf);
 
 impl Lock {
-    fn acquire(notice_path: &Path, id: &str) -> Result<Lock> {
+    /// `path` と同じフォルダに `.{id}.lock` を排他作成する。
+    pub(crate) fn acquire(notice_path: &Path, id: &str) -> Result<Lock> {
         let path = notice_path.with_file_name(format!(".{id}.lock"));
         for attempt in 0..2 {
             match fs::OpenOptions::new()
@@ -947,6 +1047,54 @@ mod tests {
             f(None, None, Some("update")),
             ["Update please"],
             "大文字小文字を区別しない"
+        );
+    }
+
+    #[test]
+    fn add_many_groups_targets_and_group_status_tracks_who_finished() {
+        let (_d, loft) = setup();
+        let targets = [user("taro"), user("jiro"), user("saburo")];
+        let made = loft
+            .add_many(&targets, &note("安全教育"), &admin(), at(1, 9))
+            .unwrap();
+        assert_eq!(made.len(), 3);
+        let g = made[0].group.clone().expect("2 件以上は組になる");
+        assert!(made.iter().all(|n| n.group.as_deref() == Some(g.as_str())));
+
+        let taro = Origin {
+            user: "taro".into(),
+            host: "pc-1".into(),
+        };
+        loft.close(&made[0].id, CloseReason::Done, &taro, at(2, 10))
+            .unwrap();
+        let (active, closed) = loft.group_status(&g, at(1, 9), at(2, 11)).unwrap();
+        assert_eq!(active.len(), 2);
+        assert_eq!(closed.len(), 1);
+        assert_eq!(closed[0].closed.by.user, "taro");
+
+        // 1 件だけなら組にしない
+        let one = loft
+            .add_many(&[user("taro")], &note("x"), &admin(), at(1, 9))
+            .unwrap();
+        assert_eq!(one[0].group, None);
+        // 宛先なし・入力の誤りは何も作らない
+        assert!(loft.add_many(&[], &note("x"), &admin(), at(1, 9)).is_err());
+        assert!(
+            loft.add_many(&targets, &note(" "), &admin(), at(1, 9))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn archive_months_are_newest_first() {
+        let (d, loft) = setup();
+        assert!(loft.archive_months().unwrap().is_empty());
+        for m in ["2026-09", "2026-11", "2026-10", "junk"] {
+            fs::create_dir_all(d.path().join("archive").join(m)).unwrap();
+        }
+        assert_eq!(
+            loft.archive_months().unwrap(),
+            ["2026-11", "2026-10", "2026-09"]
         );
     }
 

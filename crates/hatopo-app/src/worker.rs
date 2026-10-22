@@ -11,6 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub const AUMID: &str = "HatoPo.Notifier";
+/// 生存印を書き直す間隔
+const TOUCH_EVERY: Duration = Duration::from_secs(15 * 60);
 
 /// 画面から裏方への依頼。
 pub enum Cmd {
@@ -186,8 +188,14 @@ pub struct Worker {
 impl Worker {
     pub fn run(self, rx: Receiver<Cmd>) {
         let mut reminder = Reminder::default();
+        let mut last_touch: Option<Instant> = None;
         loop {
-            self.poll(&mut reminder);
+            let online = self.poll(&mut reminder);
+            // 生存印は起動直後と一定間隔ごとだけ書く (35 台が毎分書くと遅い共有に効く)
+            if online && last_touch.is_none_or(|t| t.elapsed() >= TOUCH_EVERY) {
+                self.touch(None);
+                last_touch = Some(Instant::now());
+            }
             let wait = {
                 let s = self.shared.lock().unwrap();
                 Duration::from_secs(s.snap.settings.poll_seconds.max(10))
@@ -200,8 +208,30 @@ impl Worker {
         }
     }
 
+    /// 管理画面が「最終アクセス」「最後に完了した日」「版」を出すための生存印。失敗しても通知は止めない。
+    fn touch(&self, done: Option<&str>) {
+        let _ = hatopo_core::touch(
+            self.loft.root(),
+            &self.me,
+            env!("CARGO_PKG_VERSION"),
+            now(),
+            done,
+        );
+    }
+
     fn complete(&self, id: &str) {
+        let title = {
+            let s = self.shared.lock().unwrap();
+            s.snap
+                .items
+                .iter()
+                .find(|n| n.id == id)
+                .map(|n| n.title.clone())
+        };
         let result = self.loft.close(id, CloseReason::Done, &self.me, now());
+        if result.is_ok() {
+            self.touch(Some(title.as_deref().unwrap_or("")));
+        }
         let mut s = self.shared.lock().unwrap();
         s.snap.busy.remove(id);
         match result {
@@ -225,7 +255,8 @@ impl Worker {
         self.ctx.request_repaint();
     }
 
-    fn poll(&self, reminder: &mut Reminder) {
+    /// 共有に繋がったら `true`。
+    fn poll(&self, reminder: &mut Reminder) -> bool {
         let (settings, warning) = Settings::load(self.loft.root());
         let t = now();
         let result = self.loft.inbox(&self.me.user, &self.me.host, t);
@@ -271,6 +302,7 @@ impl Worker {
         }
         self.ctx.request_repaint();
         self.check_update();
+        self.shared.lock().unwrap().snap.online
     }
 
     fn check_update(&self) {
@@ -341,6 +373,7 @@ mod tests {
             end_at: None,
             updated_at: None,
             updated_by: None,
+            group: None,
         }
     }
 
