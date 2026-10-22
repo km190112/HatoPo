@@ -23,6 +23,8 @@ pub enum Cmd {
 pub enum UiMsg {
     OpenList,
     ToggleMascot,
+    /// トレイの「ログオン時に自動で起動する」が押された (チェックは既に切り替わっている)
+    ToggleAutostart,
     Quit,
     /// 共有の exe が新しくなったのでローカルへ入れ替えた。起動し直す
     Restart,

@@ -13,7 +13,7 @@
 <p align="center"><img src="assets/hero.png" alt="手紙を運ぶ青い鳩" width="220"></p>
 
 デスクトップの隅に鳩のマスコットが居て、便りが届くと手紙をくわえて知らせます。
-クリックすると一覧が開き、そこから Excel などのファイルを開けます。
+クリックすると画面の右端に一覧が開き、そこから Excel などのファイルを開けます。
 タスクトレイにも鳩が居て、未完了の件数をバッジで出します。
 
 > **Windows 専用です。** VBA 用の DLL は 64bit 版 Excel 専用です。
@@ -78,7 +78,8 @@ for %f in (HatoPo.exe hatopo.dll hatopo-cli.exe) do icacls %f /inheritance:r /gr
 
 - **更新は自動です。** 管理者が共有の `HatoPo.exe` を新しくすると、各 PC は次の確認で入れ替えて起動し直します
 - 共有に繋がらないときも、最後に読めた一覧を出し続けます (鳩が「？」の顔になります)
-- やめるとき: `%LOCALAPPDATA%\HatoPo\HatoPo.exe --uninstall` で自動起動を解除し、フォルダを消す
+- 自動起動をやめるとき: タスクトレイの鳩を右クリック →「ログオン時に自動で起動する」のチェックを外す (付け直せば再登録)
+- すっかりやめるとき: `%LOCALAPPDATA%\HatoPo\HatoPo.exe --uninstall` で自動起動とトーストの登録を外し、フォルダを消す
 
 ## 通知の出し方
 

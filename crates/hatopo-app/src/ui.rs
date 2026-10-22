@@ -12,10 +12,13 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
-use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 pub const MASCOT_SIZE: [f32; 2] = [220.0, 210.0];
+const LIST_SIZE: [f32; 2] = [560.0, 640.0];
+/// 一覧の窓を画面の右端からどれだけ離すか
+const LIST_MARGIN: f32 = 24.0;
 /// マスコットを隠すときは画面の外へ出す。窓を消すと画面の更新が止まり、トレイも止まるため
 const OFFSCREEN: [f32; 2] = [-32000.0, -32000.0];
 const FLASH_FOR: Duration = Duration::from_secs(5);
@@ -38,6 +41,7 @@ pub struct App {
     poses: HashMap<Pose, TextureHandle>,
     tray_imgs: HashMap<Tray, Rgba>,
     tray: Option<TrayIcon>,
+    autostart_item: Option<CheckMenuItem>,
     tray_key: (Tray, usize, String),
     show_list: bool,
     focus_list: bool,
@@ -74,6 +78,7 @@ impl App {
             poses: HashMap::new(),
             tray_imgs: HashMap::new(),
             tray: None,
+            autostart_item: None,
             tray_key: (Tray::Inactive, usize::MAX, String::new()),
             show_list: false,
             focus_list: false,
@@ -88,7 +93,13 @@ impl App {
             restart_exe,
         };
         app.load_character(&cc.egui_ctx, &character);
-        app.tray = build_tray(&cc.egui_ctx, ui_tx, cmd_tx, &app.tray_imgs);
+        let installed = app.restart_exe.is_some();
+        if let Some((tray, item)) =
+            build_tray(&cc.egui_ctx, ui_tx, cmd_tx, &app.tray_imgs, installed)
+        {
+            app.tray = Some(tray);
+            app.autostart_item = Some(item);
+        }
         app
     }
 
@@ -131,6 +142,7 @@ impl App {
                     s.local.mascot_hidden = !s.local.mascot_hidden;
                     s.local.save();
                 }
+                UiMsg::ToggleAutostart => self.toggle_autostart(),
                 UiMsg::Quit => ctx.send_viewport_cmd(ViewportCommand::Close),
                 UiMsg::Restart => {
                     if let Some(exe) = &self.restart_exe
@@ -141,6 +153,35 @@ impl App {
                 }
             }
         }
+    }
+
+    /// チェックの状態に合わせてタスクスケジューラへ登録・解除する。失敗したらチェックを戻す。
+    fn toggle_autostart(&mut self) {
+        let (Some(item), Some(exe)) = (&self.autostart_item, &self.restart_exe) else {
+            return;
+        };
+        let want = item.is_checked();
+        let result = if want {
+            crate::boot::register_autostart(exe)
+        } else {
+            crate::boot::unregister_autostart()
+        };
+        let msg = match &result {
+            Ok(()) if want => {
+                "ログオン時に HatoPo を自動で起動するように登録しました。".to_string()
+            }
+            Ok(()) => "自動起動の登録を解除しました。
+次回のログオンからは起動しません (今の HatoPo は動き続けます)。
+もう一度起動したいときは、トレイのメニューでチェックを付け直してください。"
+                .to_string(),
+            Err(e) => {
+                item.set_checked(!want);
+                e.clone()
+            }
+        };
+        // メッセージボックスは閉じるまで戻らないので、画面を止めないよう別スレッドで出す
+        let is_err = result.is_err();
+        std::thread::spawn(move || crate::win::message_box(&msg, is_err));
     }
 
     fn update_tray(&mut self, state: Tray, count: usize, tip: String) {
@@ -358,12 +399,19 @@ impl App {
 
     fn list_window(&mut self, ctx: &egui::Context, snap: &crate::worker::Snapshot) {
         let id = ViewportId::from_hash_of("hatopo-list");
+        let monitor = ctx
+            .input(|i| i.viewport().monitor_size)
+            .unwrap_or(Vec2::new(1366.0, 768.0));
+        let pos = list_position(monitor);
         let builder = ViewportBuilder::default()
             .with_title("HatoPo — 便りの一覧")
-            .with_inner_size([560.0, 640.0])
+            .with_position(pos)
+            .with_inner_size(LIST_SIZE)
             .with_min_inner_size([380.0, 320.0])
             .with_icon(self.window_icon.clone());
         if self.focus_list {
+            // 開くたびに画面の右端・縦の中央へ出す (既に開いていて後ろに隠れていても戻ってくる)
+            ctx.send_viewport_cmd_to(id, ViewportCommand::OuterPosition(pos.into()));
             ctx.send_viewport_cmd_to(id, ViewportCommand::Visible(true));
             ctx.send_viewport_cmd_to(id, ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd_to(id, ViewportCommand::Focus);
@@ -743,6 +791,14 @@ fn draw_bubble(ui: &egui::Ui, full: Rect, bird: Rect, text: &str) {
     p.galley(rect.min + Vec2::new(10.0, 7.0), galley, INK);
 }
 
+/// 一覧の窓の左上の位置。画面の右端に寄せ、縦は中央。画面が窓より小さいときは左上に揃える。
+fn list_position(monitor: Vec2) -> [f32; 2] {
+    [
+        (monitor.x - LIST_SIZE[0] - LIST_MARGIN).max(0.0),
+        ((monitor.y - LIST_SIZE[1]) / 2.0).max(0.0),
+    ]
+}
+
 fn default_position(ctx: &egui::Context) -> [f32; 2] {
     // 画面右下 (タスクバーの少し上)。モニタの大きさが取れなければ控えめな位置
     let monitor = ctx
@@ -768,7 +824,8 @@ fn build_tray(
     ui_tx: Sender<UiMsg>,
     cmd_tx: Sender<Cmd>,
     imgs: &HashMap<Tray, Rgba>,
-) -> Option<TrayIcon> {
+    installed: bool,
+) -> Option<(TrayIcon, CheckMenuItem)> {
     let menu = Menu::new();
     let items = [
         MenuItem::with_id("open", "一覧を開く", true, None),
@@ -779,6 +836,26 @@ fn build_tray(
         let _ = menu.append(i);
     }
     let _ = menu.append(&PredefinedMenuItem::separator());
+    // 導入していない (--loft で起動した) ときは登録先の exe が無いので押せなくする
+    let autostart = if installed {
+        CheckMenuItem::with_id(
+            "autostart",
+            "ログオン時に自動で起動する",
+            true,
+            crate::boot::is_autostart_registered(),
+            None,
+        )
+    } else {
+        CheckMenuItem::with_id(
+            "autostart",
+            "ログオン時に自動で起動する (導入後に使えます)",
+            false,
+            false,
+            None,
+        )
+    };
+    let _ = menu.append(&autostart);
+    let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&MenuItem::with_id("quit", "HatoPo を終了", true, None));
 
     let (c1, tx1) = (ctx.clone(), ui_tx.clone());
@@ -786,6 +863,7 @@ fn build_tray(
         let msg = match e.id.0.as_str() {
             "open" => Some(UiMsg::OpenList),
             "mascot" => Some(UiMsg::ToggleMascot),
+            "autostart" => Some(UiMsg::ToggleAutostart),
             "quit" => Some(UiMsg::Quit),
             "refresh" => {
                 let _ = cmd_tx.send(Cmd::Refresh);
@@ -820,6 +898,7 @@ fn build_tray(
         .with_icon(icon)
         .build()
         .ok()
+        .map(|t| (t, autostart))
 }
 
 /// 日本語を表示するため Windows に入っているフォントを読む (exe を軽く保つため埋め込まない)。
@@ -860,7 +939,18 @@ fn setup_style(ctx: &egui::Context) {
 
 #[cfg(test)]
 mod tests {
-    use super::link_label;
+    use super::{LIST_SIZE, Vec2, link_label, list_position};
+
+    #[test]
+    fn list_opens_at_right_middle_of_screen() {
+        // 1920x1200: 右端から 24px、縦の中央
+        assert_eq!(
+            list_position(Vec2::new(1920.0, 1200.0)),
+            [1920.0 - LIST_SIZE[0] - 24.0, (1200.0 - LIST_SIZE[1]) / 2.0]
+        );
+        // 画面より窓が大きいときははみ出さず 0 に揃える
+        assert_eq!(list_position(Vec2::new(500.0, 600.0)), [0.0, 0.0]);
+    }
 
     #[test]
     fn link_labels_are_short_and_readable() {
