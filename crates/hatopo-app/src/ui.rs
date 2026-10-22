@@ -303,7 +303,7 @@ impl App {
 
         if pending > 0 {
             let c = Pos2::new(img_rect.right() - 10.0, img_rect.top() + 12.0);
-            painter.circle(c, 13.0, RED, Stroke::new(2.0, Color32::WHITE));
+            painter.circle(c, 13.0, RED, Stroke::new(2.0_f32, Color32::WHITE));
             let label = if pending > 99 {
                 "99+".to_string()
             } else {
@@ -515,9 +515,9 @@ impl App {
             Color32::WHITE
         };
         let stroke = if !seen && !read {
-            Stroke::new(1.5, BLUE)
+            Stroke::new(1.5_f32, BLUE)
         } else {
-            Stroke::new(1.0, Color32::from_rgb(0xD5, 0xDD, 0xEA))
+            Stroke::new(1.0_f32, Color32::from_rgb(0xD5, 0xDD, 0xEA))
         };
         egui::Frame::new()
             .fill(fill)
@@ -723,13 +723,13 @@ fn draw_bubble(ui: &egui::Ui, full: Rect, bird: Rect, text: &str) {
             Pos2::new(tail_x + 2.0, rect.bottom() + 9.0),
         ],
         Color32::WHITE,
-        Stroke::new(1.5, BLUE),
+        Stroke::new(1.5_f32, BLUE),
     ));
     p.rect(
         rect,
         CornerRadius::same(10),
         Color32::WHITE,
-        Stroke::new(1.5, BLUE),
+        Stroke::new(1.5_f32, BLUE),
         StrokeKind::Inside,
     );
     // 尾の付け根の線を白で消す
@@ -738,7 +738,7 @@ fn draw_bubble(ui: &egui::Ui, full: Rect, bird: Rect, text: &str) {
             Pos2::new(tail_x - 5.5, rect.bottom() - 1.0),
             Pos2::new(tail_x + 5.5, rect.bottom() - 1.0),
         ],
-        Stroke::new(2.0, Color32::WHITE),
+        Stroke::new(2.0_f32, Color32::WHITE),
     );
     p.galley(rect.min + Vec2::new(10.0, 7.0), galley, INK);
 }
@@ -852,7 +852,7 @@ fn setup_style(ctx: &egui::Context) {
     ctx.style_mut(|s| {
         s.spacing.item_spacing = Vec2::new(8.0, 6.0);
         s.spacing.button_padding = Vec2::new(10.0, 5.0);
-        for (_, f) in s.text_styles.iter_mut() {
+        for f in s.text_styles.values_mut() {
             f.size = f.size.max(13.0);
         }
     });
