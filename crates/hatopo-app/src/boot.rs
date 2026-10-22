@@ -281,6 +281,15 @@ pub fn register_autostart(exe: &Path) -> Result<(), String> {
     }
 }
 
+/// 自分の自動起動 (`<ログオン名>\HatoPo`) が登録されているか。
+pub fn is_autostart_registered() -> bool {
+    let Some((_, user)) = current_account() else {
+        return false;
+    };
+    let full = task_full_name(&user);
+    schtasks(&["/query", "/tn", &full]).is_ok_and(|o| o.status.success())
+}
+
 pub fn unregister_autostart() -> Result<(), String> {
     let (_, user) = current_account().ok_or("ログオンユーザー名が取れません")?;
     let full = task_full_name(&user);

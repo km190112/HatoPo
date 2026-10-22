@@ -27,7 +27,8 @@
      → 自分の PC にコピーされ、次回からログオン時に自動で起動します
      → 共有の HatoPo.exe を新しくすると、各 PC は自動で入れ替わります
 
-  やめるとき: %LOCALAPPDATA%\HatoPo\HatoPo.exe --uninstall
+  自動起動をやめるとき: タスクトレイの鳩を右クリック →「ログオン時に自動で起動する」のチェックを外す
+  すっかりやめるとき: %LOCALAPPDATA%\HatoPo\HatoPo.exe --uninstall
 
 ■ 通知の出し方
   Excel VBA : vba\HatoPo.bas をインポートし、HATOPO_ROOT を書き換えて HP_Add を呼ぶ
