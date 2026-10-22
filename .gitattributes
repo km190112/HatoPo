@@ -3,7 +3,6 @@
 # Git にバイト列を触らせないため text 変換を切る (GitHub の画面では日本語が化けて見えるが VBE 側を優先)。
 # 編集するのは UTF-8 の vba/HatoPo.src.txt。
 vba/HatoPo.bas -text -diff linguist-generated=true
-vba/HatoPo.src.txt text eol=lf
 
 # --- PowerShell / バッチ ---
 # .ps1 は UTF-8 BOM 付き + CRLF (BOM 無しだと PowerShell 5.1 が CP932 と誤読する)
@@ -11,6 +10,8 @@ vba/HatoPo.src.txt text eol=lf
 *.bat text eol=crlf
 # 利用者がメモ帳で開くので CRLF
 *.txt text eol=crlf
+# ただし VBA のソースは LF (後に書いた規則が勝つので、*.txt より後に置く)
+vba/HatoPo.src.txt text eol=lf
 
 # --- それ以外 ---
 *.rs   text eol=lf
