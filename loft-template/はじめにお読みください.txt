@@ -1,0 +1,33 @@
+﻿HatoPo (はとぽ) — いつでも、あなたのデスクトップに。小さな伝書鳩
+=====================================================================
+
+共有フォルダだけで動く、Windows の常駐通知アプリです。
+サーバーもデータベースも要りません。
+
+■ 中身
+  HatoLoft\            … 共有フォルダ (鳩の巣) へそのまま置くもの一式
+    HatoPo.exe         … 常駐アプリ。利用者はこれをダブルクリックして導入する
+    hatopo.dll         … Excel VBA から通知を出すための DLL (64bit Excel 専用)
+    hatopo-cli.exe     … 管理者が通知を出す・探す・消すためのコマンド
+    settings.json      … キャラクター・確認の間隔・催促の間隔
+    character_icon\    … キャラクターの絵
+  vba\HatoPo.bas       … Excel にインポートするモジュール
+
+■ 管理者がすること (最初の 1 回)
+  1. HatoLoft フォルダを共有フォルダに置く (例: \server\HatoLoft)
+     利用者全員が読み書きできるようにする
+  2. 必要なら settings.json を書き換える
+
+■ 利用者がすること (1 人 1 回)
+  1. 共有フォルダの HatoPo.exe をダブルクリックする
+  2. 「HatoPo を導入しました」と出たら OK を押す
+     → 自分の PC にコピーされ、次回からログオン時に自動で起動します
+     → 共有の HatoPo.exe を新しくすると、各 PC は自動で入れ替わります
+
+  やめるとき: %LOCALAPPDATA%\HatoPo\HatoPo.exe --uninstall
+
+■ 通知の出し方
+  Excel VBA : vba\HatoPo.bas をインポートし、HATOPO_ROOT を書き換えて HP_Add を呼ぶ
+  コマンド   : hatopo-cli add --to user:taro --title "工数表を入力してください" --due 2026-11-05
+
+詳しい使い方: https://github.com/km190112/HatoPo
