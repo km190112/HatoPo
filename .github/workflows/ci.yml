@@ -1,0 +1,75 @@
+name: CI
+
+# README や docs だけの変更では回さない。public リポジトリなので分数は無料だが、待ち時間を減らす。
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
+  pull_request:
+    branches: [main]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
+  workflow_dispatch:
+
+# 同じブランチに連続 push したとき、古い実行を捨てる。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# CI は読むだけ。既定の (書き込み込みの) 権限を渡さない。
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    # Windows 専用製品 (トレイ・トースト・タスクスケジューラ・VBA 用 DLL) なので windows-latest のみ。
+    runs-on: windows-latest
+
+    steps:
+      # アクションは SHA で固定する (タグは書き換えられる)。更新は dependabot.yml が提案する。
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # SHA 固定するとこのアクションは ref 名から版を判定できないので toolchain を明示する
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: 書式
+        run: cargo fmt --all -- --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: テスト
+        run: cargo test --workspace --no-fail-fast
+
+      # #[ignore] でテストを黙らせる逃げ道を塞ぐ
+      - name: ignore されたテストが無いこと
+        shell: bash
+        run: |
+          if grep -rn '#\[ignore' --include='*.rs' crates; then
+            echo "::error::#[ignore] が見つかりました。テストの skip は禁止です。"
+            exit 1
+          fi
+
+      - name: リリースビルド
+        run: cargo build --workspace --release --locked
+
+      # VBA の ByRef Variant と同じ ABI で DLL を呼ぶ。Excel を起動せずに VBA 境界を確かめる
+      - name: VBA 境界テスト
+        shell: pwsh
+        run: ./tests/vba_boundary_test.ps1
+
+      # HatoPo.bas は HatoPo.src.txt (UTF-8) から作る生成物。直し忘れ・文字コードの事故を落とす
+      - name: HatoPo.bas がソースと一致し、CP932 + CRLF であること
+        shell: pwsh
+        run: ./scripts/check_bas.ps1
+
+      - name: 梱包できること
+        shell: pwsh
+        run: ./scripts/package.ps1 -Version ci

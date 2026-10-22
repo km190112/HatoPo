@@ -1,0 +1,26 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/hatopo-core",
+    "crates/hatopo-app",
+    "crates/hatopo-dll",
+    "crates/hatopo-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/km190112/HatoPo"
+
+[workspace.dependencies]
+hatopo-core = { path = "crates/hatopo-core" }
+
+# panic = "abort" は指定しない。DLL は FFI 境界で catch_unwind によって panic を捕まえる。
+# abort にすると Rust の panic がそのまま Excel のクラッシュになる。
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

@@ -1,0 +1,7 @@
+# アクションは SHA で固定している。固定したまま放置すると脆弱性が直った版へ上がらないので、月 1 回提案させる。
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

@@ -1,0 +1,52 @@
+# タグ (v1.2.3) を打つと、共有フォルダへそのまま置ける zip を作って Release に添付する。
+# CI とは別ファイル。毎 push で配布物を作る必要はない。
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '手動実行時に添付先とするタグ (例 v0.1.0)'
+        required: true
+
+# Release を作るには contents: write が要る (無いと 403)
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: テスト
+        run: cargo test --workspace --no-fail-fast
+
+      - name: リリースビルド
+        run: cargo build --workspace --release --locked
+
+      - name: VBA 境界テスト
+        shell: pwsh
+        run: ./tests/vba_boundary_test.ps1
+
+      - name: 梱包
+        shell: pwsh
+        run: ./scripts/package.ps1 -Version "${{ github.event.inputs.tag || github.ref_name }}"
+
+      - name: Release に添付
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: dist/*.zip
+          generate_release_notes: true
