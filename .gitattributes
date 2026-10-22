@@ -1,0 +1,27 @@
+# --- VBA モジュール ---
+# vba/HatoPo.bas は VBE がインポートできるよう Shift-JIS (CP932) + CRLF。
+# Git にバイト列を触らせないため text 変換を切る (GitHub の画面では日本語が化けて見えるが VBE 側を優先)。
+# 編集するのは UTF-8 の vba/HatoPo.src.txt。
+vba/HatoPo.bas -text -diff linguist-generated=true
+vba/HatoPo.src.txt text eol=lf
+
+# --- PowerShell / バッチ ---
+# .ps1 は UTF-8 BOM 付き + CRLF (BOM 無しだと PowerShell 5.1 が CP932 と誤読する)
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+# 利用者がメモ帳で開くので CRLF
+*.txt text eol=crlf
+
+# --- それ以外 ---
+*.rs   text eol=lf
+*.toml text eol=lf
+*.lock text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+*.yml  text eol=lf
+*.py   text eol=lf
+*.html text eol=lf
+LICENSE text eol=lf
+*.png binary
+*.webp binary
+*.ico binary
