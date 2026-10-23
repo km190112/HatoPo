@@ -1,6 +1,7 @@
 //! 画面: デスクトップのマスコット (透過・最前面) と、通知の一覧の窓と、タスクトレイ。
 
 use crate::assets::{self, Pose, Rgba, Tray};
+use crate::place::{self, Screen};
 use crate::worker::{Cmd, Flash, SharedRef, UiMsg};
 use eframe::egui::{
     self, Align, Align2, Color32, ColorImage, CornerRadius, FontId, Layout, Margin, Pos2, Rect,
@@ -8,7 +9,7 @@ use eframe::egui::{
     ViewportCommand, ViewportId,
 };
 use hatopo_core::{Kind, MASCOT_SCALES, Notice};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -18,8 +19,13 @@ use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIc
 /// 100% のときのマスコットの窓の大きさ
 pub const MASCOT_SIZE: [f32; 2] = [220.0, 210.0];
 const LIST_SIZE: [f32; 2] = [560.0, 640.0];
-/// 一覧の窓を画面の右端からどれだけ離すか
-const LIST_MARGIN: f32 = 24.0;
+/// 画面の構成が変わってから、マスコットを定位置へ戻すまで待つ時間 (Windows が窓を動かし終えるのを待つ)
+const SETTLE: Duration = Duration::from_millis(1500);
+/// exe に埋め込んである絵の名前 (鳩の巣に無くても選べる)
+const BUILTIN_CHARACTER: &str = "HatoPoBlue";
+const REPO_URL: &str = "https://github.com/km190112/HatoPo";
+const LICENSE_URL: &str = "https://github.com/km190112/HatoPo/blob/main/LICENSE";
+const NOTICES_URL: &str = "https://github.com/km190112/HatoPo/blob/main/THIRD-PARTY-NOTICES.md";
 /// マスコットを隠すときは画面の外へ出す。窓を消すと画面の更新が止まり、トレイも止まるため
 const OFFSCREEN: [f32; 2] = [-32000.0, -32000.0];
 const FLASH_FOR: Duration = Duration::from_secs(5);
@@ -39,6 +45,20 @@ pub struct App {
     ui_rx: Receiver<UiMsg>,
     loft_root: PathBuf,
     character: String,
+    /// 選べるキャラクター (鳩の巣にあるもの + 同梱の絵 + 今選んでいるもの)
+    char_names: Vec<String>,
+    /// 自分で選んだキャラクター (None は管理者の設定に合わせる)
+    char_chosen: Option<String>,
+    /// トレイのメニューに今並べている内容 (変わったら作り直す)
+    char_menu_shown: Option<(Vec<String>, Option<String>)>,
+    char_menu: Option<Submenu>,
+    char_items: Vec<(Option<String>, CheckMenuItem)>,
+    /// 一覧の代わりに著作権・ライセンスを見せている
+    about: bool,
+    /// 前に見たモニターの構成 (変わったらケーブルの抜き挿しなど)
+    monitors: Option<Vec<crate::win::Monitor>>,
+    /// この時刻になったらマスコットを定位置へ戻す
+    relocate_at: Option<Instant>,
     poses: HashMap<Pose, TextureHandle>,
     tray_imgs: HashMap<Tray, Rgba>,
     tray: Option<TrayIcon>,
@@ -75,13 +95,27 @@ impl App {
     ) -> App {
         setup_fonts(&cc.egui_ctx);
         setup_style(&cc.egui_ctx);
-        let character = shared.lock().unwrap().snap.settings.character.clone();
+        let character = {
+            let s = shared.lock().unwrap();
+            s.local
+                .character
+                .clone()
+                .unwrap_or_else(|| s.snap.settings.character.clone())
+        };
         let mut app = App {
             shared,
             cmd_tx: cmd_tx.clone(),
             ui_rx,
             loft_root,
             character: String::new(),
+            char_names: Vec::new(),
+            char_chosen: None,
+            char_menu_shown: None,
+            char_menu: None,
+            char_items: Vec::new(),
+            about: false,
+            monitors: None,
+            relocate_at: None,
             poses: HashMap::new(),
             tray_imgs: HashMap::new(),
             tray: None,
@@ -104,12 +138,11 @@ impl App {
         };
         app.load_character(&cc.egui_ctx, &character);
         let installed = app.restart_exe.is_some();
-        if let Some((tray, item, scales)) =
-            build_tray(&cc.egui_ctx, ui_tx, cmd_tx, &app.tray_imgs, installed)
-        {
-            app.tray = Some(tray);
-            app.autostart_item = Some(item);
-            app.scale_items = scales;
+        if let Some(t) = build_tray(&cc.egui_ctx, ui_tx, cmd_tx, &app.tray_imgs, installed) {
+            app.tray = Some(t.tray);
+            app.autostart_item = Some(t.autostart);
+            app.scale_items = t.scales;
+            app.char_menu = Some(t.characters);
         }
         app
     }
@@ -147,7 +180,14 @@ impl App {
                 UiMsg::OpenList => {
                     self.show_list = true;
                     self.focus_list = true;
+                    self.about = false;
                 }
+                UiMsg::OpenAbout => {
+                    self.show_list = true;
+                    self.focus_list = true;
+                    self.about = true;
+                }
+                UiMsg::SetCharacter(c) => self.set_character(c),
                 UiMsg::ToggleMascot => {
                     let mut s = self.shared.lock().unwrap();
                     s.local.mascot_hidden = !s.local.mascot_hidden;
@@ -172,6 +212,93 @@ impl App {
         let mut s = self.shared.lock().unwrap();
         s.local.mascot_scale = Some(clamp_scale(pct));
         s.local.save();
+    }
+
+    /// 自分のキャラクターを覚える (管理者の既定より優先)。None で管理者の設定に戻す。
+    fn set_character(&mut self, name: Option<String>) {
+        let mut s = self.shared.lock().unwrap();
+        s.local.character = name;
+        s.local.save();
+        // トレイのチェックは押した瞬間に OS が切り替えるので、同じ項目を押したときも描き直させる
+        self.char_menu_shown = None;
+    }
+
+    /// トレイの「キャラクター」の中身を、選べるものと今の選択に合わせる。
+    fn sync_character_menu(&mut self) {
+        let shown = (self.char_names.clone(), self.char_chosen.clone());
+        if self.char_menu_shown.as_ref() == Some(&shown) {
+            return;
+        }
+        let Some(menu) = &self.char_menu else {
+            return;
+        };
+        let same_names = self
+            .char_menu_shown
+            .as_ref()
+            .is_some_and(|(n, _)| *n == shown.0);
+        if !same_names {
+            for (_, it) in self.char_items.drain(..) {
+                let _ = menu.remove(&it);
+            }
+            let mut items = vec![(
+                None,
+                CheckMenuItem::with_id("char-default", "管理者の設定に合わせる", true, false, None),
+            )];
+            for n in &shown.0 {
+                items.push((
+                    Some(n.clone()),
+                    CheckMenuItem::with_id(format!("char:{n}"), n, true, false, None),
+                ));
+            }
+            for (_, it) in &items {
+                let _ = menu.append(it);
+            }
+            self.char_items = items;
+        }
+        for (name, it) in &self.char_items {
+            it.set_checked(*name == shown.1);
+        }
+        self.char_menu_shown = Some(shown);
+    }
+
+    /// 画面の構成が変わったら、落ち着いてからメイン画面の右下 (定位置) へ戻す。
+    /// 構成が同じでも、マスコットがどのモニターからも見えなくなっていたら戻す。
+    fn keep_mascot_on_screen(&mut self, ctx: &egui::Context, scale_pct: u32, hidden: bool) {
+        let mons = crate::win::monitors();
+        if mons.is_empty() {
+            return;
+        }
+        let changed = self.monitors.as_ref().is_some_and(|m| *m != mons);
+        self.monitors = Some(mons.clone());
+        if changed {
+            if hidden {
+                // 隠している間に変わったら、次に出すときは定位置から
+                let mut s = self.shared.lock().unwrap();
+                s.local.mascot_pos = None;
+                s.local.save();
+            } else {
+                self.relocate_at = Some(Instant::now() + SETTLE);
+            }
+        }
+        if hidden {
+            return;
+        }
+        let Some(r) = ctx.input(|i| i.viewport().outer_rect) else {
+            return;
+        };
+        let screens = to_screens(&mons, ctx.pixels_per_point());
+        let due = self.relocate_at.is_some_and(|t| Instant::now() >= t);
+        // 動かしている最中 (位置が変わって 1 秒以内) は、置き去り扱いにしない
+        let lost = self.relocate_at.is_none()
+            && self.pos_dirty_since.is_none()
+            && !place::is_reachable(r, &screens);
+        if due || lost {
+            self.relocate_at = None;
+            if let Some(p) = place::primary(&screens) {
+                let pos = place::corner_position(p.work, mascot_size(scale_pct));
+                ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos));
+            }
+        }
     }
 
     /// 大きさが変わったら、窓の大きさを変え、右下の角が動かないよう位置も直す。
@@ -273,7 +400,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.handle_messages(ctx);
         // 表示に要るものをまとめて写し取り、ロックを長く持たない
-        let (snap, pending, unseen, hidden, saved_pos, my_scale) = {
+        let (snap, pending, unseen, hidden, saved_pos, my_scale, chosen) = {
             let s = self.shared.lock().unwrap();
             (
                 s.snap.clone(),
@@ -282,13 +409,20 @@ impl eframe::App for App {
                 s.local.mascot_hidden,
                 s.local.mascot_pos,
                 s.local.mascot_scale,
+                s.local.character.clone(),
             )
         };
         let scale_pct = clamp_scale(my_scale.unwrap_or(snap.settings.mascot_scale));
-        if snap.settings.character != self.character && snap.loaded {
-            let name = snap.settings.character.clone();
-            self.load_character(ctx, &name);
+        // 自分で選んだ絵が先。選んでいなければ管理者の設定 (読めてから)
+        let want_character = chosen
+            .clone()
+            .unwrap_or_else(|| snap.settings.character.clone());
+        if want_character != self.character && (snap.loaded || chosen.is_some()) {
+            self.load_character(ctx, &want_character);
         }
+        self.char_names = character_choices(&snap.characters, chosen.as_deref());
+        self.char_chosen = chosen;
+        self.sync_character_menu();
 
         // --- マスコットの表示/非表示 ---
         let hidden = hidden || !snap.settings.show_mascot;
@@ -296,7 +430,7 @@ impl eframe::App for App {
             let pos = if hidden {
                 OFFSCREEN
             } else {
-                saved_pos.unwrap_or_else(|| default_position(ctx))
+                saved_pos.unwrap_or_else(|| default_position(ctx, scale_pct))
             };
             ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos.into()));
             ctx.send_viewport_cmd(ViewportCommand::MousePassthrough(hidden));
@@ -304,6 +438,7 @@ impl eframe::App for App {
             self.last_pos = None;
         }
         self.apply_scale(ctx, scale_pct, hidden);
+        self.keep_mascot_on_screen(ctx, scale_pct, hidden);
         self.remember_position(ctx, hidden);
 
         // --- 状態の決定 ---
@@ -351,7 +486,7 @@ impl eframe::App for App {
 
         // --- 一覧の窓 ---
         if self.show_list {
-            self.list_window(ctx, &snap);
+            self.list_window(ctx, &snap, hidden, scale_pct);
         }
 
         // 吹き出しの消灯や完了の喜びを時間で戻すため、ゆっくり描き直す
@@ -409,6 +544,7 @@ impl App {
         if resp.clicked() {
             self.show_list = !self.show_list;
             self.focus_list = self.show_list;
+            self.about = false;
         }
         let hovered = resp.hovered();
         // マスコットの上で Ctrl + ホイール: 1 段ずつ大きく / 小さく
@@ -439,9 +575,31 @@ impl App {
                         .color(MUTED),
                 );
             });
+            ui.menu_button("キャラクター", |ui| {
+                let mut pick = None;
+                if ui
+                    .radio(self.char_chosen.is_none(), "管理者の設定に合わせる")
+                    .clicked()
+                {
+                    pick = Some(None);
+                }
+                for n in &self.char_names {
+                    if ui
+                        .radio(self.char_chosen.as_deref() == Some(n.as_str()), n)
+                        .clicked()
+                    {
+                        pick = Some(Some(n.clone()));
+                    }
+                }
+                if let Some(c) = pick {
+                    self.set_character(c);
+                    ui.close();
+                }
+            });
             if ui.button("一覧を開く").clicked() {
                 self.show_list = true;
                 self.focus_list = true;
+                self.about = false;
                 ui.close();
             }
             if ui.button("今すぐ確認").clicked() {
@@ -467,20 +625,26 @@ impl App {
         }
     }
 
-    fn list_window(&mut self, ctx: &egui::Context, snap: &crate::worker::Snapshot) {
+    fn list_window(
+        &mut self,
+        ctx: &egui::Context,
+        snap: &crate::worker::Snapshot,
+        hidden: bool,
+        scale_pct: u32,
+    ) {
         let id = ViewportId::from_hash_of("hatopo-list");
-        let monitor = ctx
-            .input(|i| i.viewport().monitor_size)
-            .unwrap_or(Vec2::new(1366.0, 768.0));
-        let pos = list_position(monitor);
+        let (pos, size) = list_geometry(ctx, hidden, scale_pct);
+        let pos = [pos.x, pos.y];
+        // 開く操作のとき (既に開いていて前に出すときも) マスコットのそばへ置き直す
+        let place_now = self.focus_list;
         let builder = ViewportBuilder::default()
             .with_title("HatoPo — 便りの一覧")
             .with_position(pos)
-            .with_inner_size(LIST_SIZE)
+            .with_inner_size(size)
             .with_min_inner_size([380.0, 320.0])
             .with_icon(self.window_icon.clone());
         if self.focus_list {
-            // 開くたびに画面の右端・縦の中央へ出す (既に開いていて後ろに隠れていても戻ってくる)
+            // 開くたびにマスコットのそばへ出す (既に開いていて後ろに隠れていても戻ってくる)
             ctx.send_viewport_cmd_to(id, ViewportCommand::OuterPosition(pos.into()));
             ctx.send_viewport_cmd_to(id, ViewportCommand::Visible(true));
             ctx.send_viewport_cmd_to(id, ViewportCommand::Minimized(false));
@@ -491,6 +655,10 @@ impl App {
             if ctx.input(|i| i.viewport().close_requested()) {
                 self.show_list = false;
                 return;
+            }
+            if place_now {
+                // 作った直後の窓には外から送った命令が届かないことがあるので、窓の中からも位置を指定する
+                ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos.into()));
             }
             egui::TopBottomPanel::top("status")
                 .frame(
@@ -533,11 +701,23 @@ impl App {
                 if ui.button("今すぐ確認").clicked() {
                     let _ = self.cmd_tx.send(Cmd::Refresh);
                 }
+                let label = if self.about {
+                    "一覧へ戻る"
+                } else {
+                    "について"
+                };
+                if ui.button(label).clicked() {
+                    self.about = !self.about;
+                }
             });
         });
     }
 
     fn list_body(&mut self, ui: &mut egui::Ui, snap: &crate::worker::Snapshot) {
+        if self.about {
+            self.about_body(ui);
+            return;
+        }
         if let Some(reason) = snap.offline_reason.as_ref().filter(|_| !snap.online) {
             banner(
                 ui,
@@ -615,6 +795,61 @@ impl App {
                     );
                 }
             });
+    }
+
+    /// 著作権・ライセンス・GitHub へのリンク。
+    fn about_body(&mut self, ui: &mut egui::Ui) {
+        let mut open = None;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.label(
+                    RichText::new(format!("HatoPo  v{}", env!("CARGO_PKG_VERSION")))
+                        .size(20.0)
+                        .strong()
+                        .color(INK),
+                );
+                ui.label(RichText::new("いつでも、あなたのデスクトップに。小さな伝書鳩").color(MUTED));
+                ui.add_space(10.0);
+
+                about_section(ui, "著作権", |ui| {
+                    ui.label("Copyright (c) 2026 km190112");
+                });
+                about_section(ui, "プログラムのライセンス", |ui| {
+                    ui.label("MIT License。ソースコードは GitHub で公開しています。");
+                });
+                about_section(ui, "キャラクター画像", |ui| {
+                    ui.label(
+                        "HatoPoBlue など同梱のキャラクター画像は MIT License の対象外です。\
+                         著作権は作者に帰属し、HatoPo をそのまま動かすために同梱しています。",
+                    );
+                });
+                about_section(ui, "使っているオープンソース", |ui| {
+                    ui.label(
+                        "eframe / egui, image, serde, chrono, tray-icon, \
+                         tauri-winrt-notification, windows-sys ほか。\
+                         いずれも MIT License または Apache License 2.0 などで公開されているものです。\
+                         全部の一覧と各ライセンスは下のリンクにあります。",
+                    );
+                });
+                about_section(ui, "リンク", |ui| {
+                    for (label, url) in [
+                        ("GitHub (ソースコード・使い方)", REPO_URL),
+                        ("ライセンス全文 (LICENSE)", LICENSE_URL),
+                        ("使っているライブラリの一覧 (THIRD-PARTY-NOTICES)", NOTICES_URL),
+                    ] {
+                        let r = ui.link(RichText::new(label).color(BLUE)).on_hover_text(url);
+                        if r.clicked() {
+                            open = Some(url);
+                        }
+                    }
+                });
+            });
+        if let Some(url) = open
+            && let Err(e) = crate::win::shell_open(url)
+        {
+            self.shared.lock().unwrap().snap.action_error = Some(e);
+        }
     }
 
     fn card(&mut self, ui: &mut egui::Ui, n: &Notice, snap: &crate::worker::Snapshot) {
@@ -862,7 +1097,6 @@ fn draw_bubble(ui: &egui::Ui, full: Rect, bird: Rect, text: &str, k: f32) {
     p.galley(rect.min + Vec2::new(10.0, 7.0), galley, INK);
 }
 
-/// 一覧の窓の左上の位置。画面の右端に寄せ、縦は中央。画面が窓より小さいときは左上に揃える。
 /// 選べる段階に丸める (settings.json や state.json に範囲外の値があっても窓が壊れないように)。
 pub fn clamp_scale(pct: u32) -> u32 {
     *MASCOT_SCALES
@@ -895,22 +1129,80 @@ fn anchored_min(old_min: Pos2, old_size: Vec2, new_size: Vec2) -> Pos2 {
     old_min + (old_size - new_size)
 }
 
-fn list_position(monitor: Vec2) -> [f32; 2] {
-    [
-        (monitor.x - LIST_SIZE[0] - LIST_MARGIN).max(0.0),
-        ((monitor.y - LIST_SIZE[1]) / 2.0).max(0.0),
-    ]
+/// モニターの一覧を点の座標にする (点 = 実ピクセル / pixels_per_point)。
+fn to_screens(mons: &[crate::win::Monitor], ppp: f32) -> Vec<Screen> {
+    let rect = |r: [i32; 4]| {
+        Rect::from_min_max(
+            Pos2::new(r[0] as f32 / ppp, r[1] as f32 / ppp),
+            Pos2::new(r[2] as f32 / ppp, r[3] as f32 / ppp),
+        )
+    };
+    mons.iter()
+        .map(|m| Screen {
+            rect: rect(m.rect),
+            work: rect(m.work),
+            primary: m.primary,
+        })
+        .collect()
 }
 
-fn default_position(ctx: &egui::Context) -> [f32; 2] {
-    // 画面右下 (タスクバーの少し上)。モニタの大きさが取れなければ控えめな位置
-    let monitor = ctx
-        .input(|i| i.viewport().monitor_size)
-        .unwrap_or(Vec2::new(1366.0, 768.0));
-    [
-        monitor.x - MASCOT_SIZE[0] - 24.0,
-        monitor.y - MASCOT_SIZE[1] - 64.0,
-    ]
+/// マスコットの定位置: メイン画面の右下 (タスクバーの少し上)。
+fn default_position(ctx: &egui::Context, scale_pct: u32) -> [f32; 2] {
+    let size = mascot_size(scale_pct);
+    let screens = to_screens(&crate::win::monitors(), ctx.pixels_per_point());
+    let p = match place::primary(&screens) {
+        Some(s) => place::corner_position(s.work, size),
+        None => {
+            // モニターの情報が取れなければ、窓のあるモニターの大きさから
+            let m = ctx
+                .input(|i| i.viewport().monitor_size)
+                .unwrap_or(Vec2::new(1366.0, 768.0));
+            Pos2::new(m.x - size.x - 24.0, m.y - size.y - 64.0)
+        }
+    };
+    [p.x, p.y]
+}
+
+/// 一覧の窓の左上と大きさ。マスコットのすぐ隣 (隠しているときは定位置の隣) に置く。
+fn list_geometry(ctx: &egui::Context, hidden: bool, scale_pct: u32) -> (Pos2, Vec2) {
+    let screens = to_screens(&crate::win::monitors(), ctx.pixels_per_point());
+    let default_rect = || {
+        let d = default_position(ctx, scale_pct);
+        Rect::from_min_size(Pos2::new(d[0], d[1]), mascot_size(scale_pct))
+    };
+    let mascot = if hidden {
+        default_rect()
+    } else {
+        ctx.input(|i| i.viewport().outer_rect)
+            .unwrap_or_else(default_rect)
+    };
+    let work = place::screen_of(mascot, &screens)
+        .map(|s| s.work)
+        .unwrap_or_else(|| {
+            let m = ctx
+                .input(|i| i.viewport().monitor_size)
+                .unwrap_or(Vec2::new(1366.0, 768.0));
+            Rect::from_min_size(Pos2::ZERO, m)
+        });
+    let size = place::list_size(work, Vec2::new(LIST_SIZE[0], LIST_SIZE[1]));
+    (place::list_position(mascot, work, size), size)
+}
+
+/// 選べるキャラクター: 鳩の巣にあるもの + 同梱の絵 + 今選んでいるもの (鳩の巣から消えていても外さない)。
+fn character_choices(on_loft: &[String], chosen: Option<&str>) -> Vec<String> {
+    let mut set: BTreeSet<String> = on_loft.iter().cloned().collect();
+    set.insert(BUILTIN_CHARACTER.to_string());
+    if let Some(c) = chosen {
+        set.insert(c.to_string());
+    }
+    set.into_iter().collect()
+}
+
+fn about_section(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
+    ui.label(RichText::new(title).size(13.0).strong().color(MUTED));
+    ui.add_space(2.0);
+    body(ui);
+    ui.add_space(10.0);
 }
 
 pub fn window_icon() -> egui::IconData {
@@ -922,8 +1214,13 @@ pub fn window_icon() -> egui::IconData {
     }
 }
 
-/// トレイ本体と、あとでチェックを付け外しする項目 (自動起動・大きさ)
-type TrayParts = (TrayIcon, CheckMenuItem, Vec<(u32, CheckMenuItem)>);
+/// トレイ本体と、あとで中身を変える項目 (自動起動・大きさ・キャラクター)
+struct TrayParts {
+    tray: TrayIcon,
+    autostart: CheckMenuItem,
+    scales: Vec<(u32, CheckMenuItem)>,
+    characters: Submenu,
+}
 
 fn build_tray(
     ctx: &egui::Context,
@@ -937,6 +1234,7 @@ fn build_tray(
         MenuItem::with_id("open", "一覧を開く", true, None),
         MenuItem::with_id("refresh", "今すぐ確認", true, None),
         MenuItem::with_id("mascot", "マスコットの表示/非表示", true, None),
+        MenuItem::with_id("about", "HatoPo について (著作権・ライセンス)", true, None),
     ];
     for i in &items {
         let _ = menu.append(i);
@@ -956,6 +1254,9 @@ fn build_tray(
         let _ = size_menu.append(item);
     }
     let _ = menu.append(&size_menu);
+    // キャラクター: 中身 (鳩の巣にある絵) は最初の描画で入れる
+    let char_menu = Submenu::new("キャラクター", true);
+    let _ = menu.append(&char_menu);
     let _ = menu.append(&PredefinedMenuItem::separator());
     // 導入していない (--loft で起動した) ときは登録先の exe が無いので押せなくする
     let autostart = if installed {
@@ -984,6 +1285,8 @@ fn build_tray(
         let msg = match e.id.0.as_str() {
             "open" => Some(UiMsg::OpenList),
             "mascot" => Some(UiMsg::ToggleMascot),
+            "about" => Some(UiMsg::OpenAbout),
+            "char-default" => Some(UiMsg::SetCharacter(None)),
             "autostart" => Some(UiMsg::ToggleAutostart),
             "quit" => Some(UiMsg::Quit),
             "refresh" => {
@@ -993,7 +1296,11 @@ fn build_tray(
             id => id
                 .strip_prefix("scale-")
                 .and_then(|p| p.parse().ok())
-                .map(UiMsg::SetScale),
+                .map(UiMsg::SetScale)
+                .or_else(|| {
+                    id.strip_prefix("char:")
+                        .map(|n| UiMsg::SetCharacter(Some(n.to_string())))
+                }),
         };
         if let Some(m) = msg {
             let _ = tx1.send(m);
@@ -1022,7 +1329,12 @@ fn build_tray(
         .with_icon(icon)
         .build()
         .ok()
-        .map(|t| (t, autostart, scales))
+        .map(|tray| TrayParts {
+            tray,
+            autostart,
+            scales,
+            characters: char_menu,
+        })
 }
 
 /// 日本語を表示するため Windows に入っているフォントを読む (exe を軽く保つため埋め込まない)。
@@ -1064,7 +1376,7 @@ fn setup_style(ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::{
-        LIST_SIZE, Pos2, Vec2, anchored_min, clamp_scale, link_label, list_position, mascot_size,
+        Pos2, Vec2, anchored_min, character_choices, clamp_scale, link_label, mascot_size,
         step_scale,
     };
 
@@ -1090,14 +1402,14 @@ mod tests {
     }
 
     #[test]
-    fn list_opens_at_right_middle_of_screen() {
-        // 1920x1200: 右端から 24px、縦の中央
+    fn character_choices_always_include_builtin_and_current_pick() {
+        assert_eq!(character_choices(&[], None), ["HatoPoBlue"]);
+        let on_loft = ["HatoPoPink".to_string(), "HatoPoBlue".to_string()];
         assert_eq!(
-            list_position(Vec2::new(1920.0, 1200.0)),
-            [1920.0 - LIST_SIZE[0] - 24.0, (1200.0 - LIST_SIZE[1]) / 2.0]
+            character_choices(&on_loft, Some("HatoPoGreen")),
+            ["HatoPoBlue", "HatoPoGreen", "HatoPoPink"],
+            "鳩の巣から消えた絵を選んでいても一覧から外さない"
         );
-        // 画面より窓が大きいときははみ出さず 0 に揃える
-        assert_eq!(list_position(Vec2::new(500.0, 600.0)), [0.0, 0.0]);
     }
 
     #[test]

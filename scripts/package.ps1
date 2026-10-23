@@ -9,7 +9,7 @@
 #     character_icon\HatoPoBlue\ (poses, tray-icon)
 #     broadcast\ PigeonHole\user\ PigeonHole\device\ archive\ status\
 #   vba\HatoPo.bas     … Excel にインポートするモジュール
-#   はじめにお読みください.txt
+#   はじめにお読みください.txt / キャラクター画像の作り方.md / THIRD-PARTY-NOTICES.md
 
 param(
     [Parameter(Mandatory)] [string]$Version
@@ -57,6 +57,8 @@ foreach ($d in $dirs.Keys) {
 New-Item -ItemType Directory -Force (Join-Path $stage 'vba') | Out-Null
 Copy-Item -LiteralPath (Join-Path $root 'vba\HatoPo.bas') -Destination (Join-Path $stage 'vba')
 Copy-Item -LiteralPath (Join-Path $root 'loft-template\はじめにお読みください.txt') -Destination $stage
+Copy-Item -LiteralPath (Join-Path $root 'docs\キャラクター画像の作り方.md') -Destination $stage
+Copy-Item -LiteralPath (Join-Path $root 'THIRD-PARTY-NOTICES.md') -Destination $stage
 
 $zip = Join-Path $dist "HatoPo-$Version.zip"
 if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }

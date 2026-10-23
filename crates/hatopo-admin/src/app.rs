@@ -1376,7 +1376,7 @@ impl AdminApp {
                     });
                 ui.label(
                     RichText::new(
-                        "character_icon の下のフォルダ。絵が足りなければ同梱の HatoPoBlue を使う",
+                        "みんなの既定。利用者が自分で選んでいればそちらが先。絵が足りなければ同梱の HatoPoBlue を使う",
                     )
                     .color(MUTED),
                 );

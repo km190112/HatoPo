@@ -2,7 +2,7 @@
 //!
 //! - 開いて読んだ通知 (マスコットの「新着」表示を消すため)
 //! - 既読にした一斉送信 (一覧には残すが、件数とトーストから外す)
-//! - マスコットの位置と表示/非表示
+//! - マスコットの位置と表示/非表示、大きさ、選んだキャラクター
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -17,6 +17,8 @@ pub struct LocalState {
     pub mascot_hidden: bool,
     /// 自分で選んだマスコットの大きさ (%)。None なら settings.json の既定
     pub mascot_scale: Option<u32>,
+    /// 自分で選んだキャラクター (`character_icon\` の下のフォルダ名)。None なら settings.json の既定
+    pub character: Option<String>,
 }
 
 impl LocalState {
@@ -76,5 +78,20 @@ mod tests {
         let s: LocalState = serde_json::from_str(r#"{"seen":["x"],"future_field":1}"#).unwrap();
         assert!(s.seen.contains("x"));
         assert!(!s.mascot_hidden);
+    }
+
+    #[test]
+    fn chosen_character_survives_save_and_old_files_mean_no_choice() {
+        let s = LocalState {
+            character: Some("HatoPoPink".into()),
+            ..Default::default()
+        };
+        let back: LocalState =
+            serde_json::from_slice(&serde_json::to_vec_pretty(&s).unwrap()).unwrap();
+        assert_eq!(back.character.as_deref(), Some("HatoPoPink"));
+        // この項目が無い古い state.json は「選んでいない」
+        let old: LocalState = serde_json::from_str(r#"{"mascot_scale":125}"#).unwrap();
+        assert_eq!(old.character, None);
+        assert_eq!(old.mascot_scale, Some(125));
     }
 }

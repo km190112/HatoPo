@@ -12,6 +12,7 @@
 mod assets;
 mod boot;
 mod local;
+mod place;
 mod ui;
 mod win;
 mod worker;
