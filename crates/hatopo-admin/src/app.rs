@@ -9,8 +9,8 @@ use chrono::{Local, NaiveDateTime};
 use eframe::egui::{self, Color32, RichText};
 use egui_extras::{Column, TableBuilder};
 use hatopo_core::{
-    Archived, CloseReason, Directory, Error, Kind, Loft, MAX_POLL_SECONDS, MAX_REMIND_MINUTES,
-    MIN_POLL_SECONDS, Member, Notice, Origin, Settings, Target,
+    Archived, CloseReason, Directory, Error, Kind, Loft, MASCOT_SCALES, MAX_POLL_SECONDS,
+    MAX_REMIND_MINUTES, MIN_POLL_SECONDS, Member, Notice, Origin, Settings, Target,
 };
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -1409,6 +1409,20 @@ impl AdminApp {
                 ui.label("マスコット");
                 ui.checkbox(&mut self.s_edit.show_mascot, "デスクトップに鳩を出す");
                 ui.label(RichText::new("外すとタスクトレイだけになる").color(MUTED));
+                ui.end_row();
+
+                ui.label("既定の大きさ");
+                egui::ComboBox::from_id_salt("mascot-scale")
+                    .selected_text(format!("{}%", self.s_edit.mascot_scale))
+                    .show_ui(ui, |ui| {
+                        for p in MASCOT_SCALES {
+                            ui.selectable_value(&mut self.s_edit.mascot_scale, p, format!("{p}%"));
+                        }
+                    });
+                ui.label(
+                    RichText::new("利用者が自分で選んでいなければこの大きさ。各自はトレイ・右クリック・Ctrl + ホイールで変えられる")
+                        .color(MUTED),
+                );
                 ui.end_row();
             });
         ui.add_space(10.0);

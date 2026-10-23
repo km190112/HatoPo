@@ -2,5 +2,6 @@
   "character": "HatoPoBlue",
   "poll_seconds": 60,
   "remind_minutes": 60,
-  "show_mascot": true
+  "show_mascot": true,
+  "mascot_scale": 100
 }

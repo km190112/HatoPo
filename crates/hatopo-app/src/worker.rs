@@ -11,8 +11,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub const AUMID: &str = "HatoPo.Notifier";
-/// 生存印を書き直す間隔
-const TOUCH_EVERY: Duration = Duration::from_secs(15 * 60);
 
 /// 画面から裏方への依頼。
 pub enum Cmd {
@@ -27,6 +25,8 @@ pub enum UiMsg {
     ToggleMascot,
     /// トレイの「ログオン時に自動で起動する」が押された (チェックは既に切り替わっている)
     ToggleAutostart,
+    /// マスコットの大きさ (%) を選んだ
+    SetScale(u32),
     Quit,
     /// 共有の exe が新しくなったのでローカルへ入れ替えた。起動し直す
     Restart,
@@ -188,13 +188,15 @@ pub struct Worker {
 impl Worker {
     pub fn run(self, rx: Receiver<Cmd>) {
         let mut reminder = Reminder::default();
-        let mut last_touch: Option<Instant> = None;
+        let mut last_touch: Option<chrono::NaiveDate> = None;
         loop {
             let online = self.poll(&mut reminder);
-            // 生存印は起動直後と一定間隔ごとだけ書く (35 台が毎分書くと遅い共有に効く)
-            if online && last_touch.is_none_or(|t| t.elapsed() >= TOUCH_EVERY) {
+            // 生存印 (最終アクセス日) は起動直後と、日付が変わって最初の確認だけ書く。
+            // 起動時だけにすると、何日もログオンしたままの PC が管理画面で「アクセス無し」に見える
+            let today = now().date();
+            if online && last_touch != Some(today) {
                 self.touch(None);
-                last_touch = Some(Instant::now());
+                last_touch = Some(today);
             }
             let wait = {
                 let s = self.shared.lock().unwrap();

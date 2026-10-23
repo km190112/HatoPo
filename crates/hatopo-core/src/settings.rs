@@ -15,6 +15,8 @@ pub struct Settings {
     pub remind_minutes: u64,
     /// マスコットをデスクトップに出すか。false ならトレイだけ。
     pub show_mascot: bool,
+    /// マスコットの既定の大きさ (%)。利用者が自分で選んでいなければこれを使う。
+    pub mascot_scale: u32,
 }
 
 impl Default for Settings {
@@ -24,9 +26,13 @@ impl Default for Settings {
             poll_seconds: 60,
             remind_minutes: 60,
             show_mascot: true,
+            mascot_scale: 100,
         }
     }
 }
+
+/// マスコットの大きさとして選べる段階 (%)。
+pub const MASCOT_SCALES: [u32; 6] = [50, 75, 100, 125, 150, 200];
 
 /// 共有を叩きすぎないための下限。
 pub const MIN_POLL_SECONDS: u64 = 10;
@@ -51,6 +57,11 @@ impl Settings {
         if self.remind_minutes > MAX_REMIND_MINUTES {
             return Err(Error::Invalid(format!(
                 "催促の間隔は 0〜{MAX_REMIND_MINUTES} 分にしてください (0 は催促しない)。"
+            )));
+        }
+        if !MASCOT_SCALES.contains(&self.mascot_scale) {
+            return Err(Error::Invalid(format!(
+                "マスコットの大きさは {MASCOT_SCALES:?} % のどれかにしてください。"
             )));
         }
         crate::model::normalize_name(&self.character).map_err(|_| {
@@ -141,6 +152,10 @@ mod tests {
             },
             Settings {
                 character: r"a\b".into(),
+                ..Default::default()
+            },
+            Settings {
+                mascot_scale: 90,
                 ..Default::default()
             },
         ] {

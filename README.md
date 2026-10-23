@@ -82,6 +82,7 @@ for %f in (HatoPo.exe HatoPoAdmin.exe hatopo.dll hatopo-cli.exe settings.json di
 
 - **更新は自動です。** 管理者が共有の `HatoPo.exe` を新しくすると、各 PC は次の確認で入れ替えて起動し直します
 - 共有に繋がらないときも、最後に読めた一覧を出し続けます (鳩が「？」の顔になります)
+- マスコットの大きさは各自で変えられます: タスクトレイの「マスコットの大きさ」、マスコットの右クリック、マスコットの上で Ctrl + ホイール (50〜200%)。トースト (Windows の通知) の大きさは Windows が決めるので変えられません
 - 自動起動をやめるとき: タスクトレイの鳩を右クリック →「ログオン時に自動で起動する」のチェックを外す (付け直せば再登録)
 - すっかりやめるとき: `%LOCALAPPDATA%\HatoPo\HatoPo.exe --uninstall` で自動起動とトーストの登録を外し、フォルダを消す
 
@@ -99,7 +100,7 @@ for %f in (HatoPo.exe HatoPoAdmin.exe hatopo.dll hatopo-cli.exe settings.json di
 
 - 最終アクセスが 7 日より前の人・PC と、管理画面より古い版の HatoPo は黄色で出ます (要件の「未更新の端末」はここで分かります)
 - 名簿は管理者 2 人が同時に直しても壊れません (後から保存した方が「先に変更されました」と止まります)
-- 最終アクセスは、各 PC の HatoPo が起動時・15 分ごと・完了したときに `status\` へ書いたものです
+- 最終アクセスは、各 PC の HatoPo が起動時・日付が変わって最初の確認・完了したときに (1 日 1 回程度) `status\` へ書いたものです
 
 ## 通知の出し方
 
@@ -171,7 +172,8 @@ hatopo-cli archive 2026-10
   "character": "HatoPoBlue",
   "poll_seconds": 60,
   "remind_minutes": 60,
-  "show_mascot": true
+  "show_mascot": true,
+  "mascot_scale": 100
 }
 ```
 
@@ -180,6 +182,7 @@ hatopo-cli archive 2026-10
 | `character` | `character_icon\` の下のフォルダ名。フォルダを足せばキャラクターを切り替えられる |
 | `poll_seconds` | 共有を見に行く間隔 (秒)。10 秒未満は 10 秒 |
 | `remind_minutes` | 未完了の便りをトーストで催促する間隔 (分)。0 で催促しない |
+| `mascot_scale` | マスコットの既定の大きさ (%)。50 / 75 / 100 / 125 / 150 / 200。利用者が自分で選んでいればそちらが優先 |
 | `show_mascot` | `false` でマスコットを出さずタスクトレイだけにする |
 
 キャラクターのフォルダには `poses\` (idle / letter / letter_calm / happy / celebrate / puzzled / sleep) と

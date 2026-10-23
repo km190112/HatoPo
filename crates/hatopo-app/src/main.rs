@@ -136,6 +136,10 @@ fn run(loft: PathBuf, installed_exe: Option<PathBuf>, icon_png: PathBuf, show_li
     let local = local::LocalState::load();
     let start_pos = local.mascot_pos;
     let (settings, _) = Settings::load(&loft);
+    // 選んである大きさで窓を作る (最初の描画で大きさが跳ねないように)
+    let start_size = ui::mascot_size(ui::clamp_scale(
+        local.mascot_scale.unwrap_or(settings.mascot_scale),
+    ));
     let shared = Arc::new(Mutex::new(worker::Shared {
         snap: worker::Snapshot {
             settings,
@@ -151,7 +155,7 @@ fn run(loft: PathBuf, installed_exe: Option<PathBuf>, icon_png: PathBuf, show_li
 
     let mut viewport = eframe::egui::ViewportBuilder::default()
         .with_title("HatoPo")
-        .with_inner_size(ui::MASCOT_SIZE)
+        .with_inner_size(start_size)
         .with_decorations(false)
         .with_transparent(true)
         .with_always_on_top()

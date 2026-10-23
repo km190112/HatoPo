@@ -96,8 +96,8 @@ def main():
     (CHAR / "tray-icon").mkdir(parents=True, exist_ok=True)
     for name, spec in POSES.items():
         im = cut(spec)
-        # マスコット窓は 128px 前後で描く。大きい絵は 160px 四方に収める
-        im.thumbnail((160, 160), Image.Resampling.LANCZOS)
+        # マスコットは 50〜200% で描く。シートの元の解像度 (約 220px) を保つ (縮めると 200% で粗くなる)
+        im.thumbnail((320, 320), Image.Resampling.LANCZOS)
         im.save(CHAR / "poses" / f"{name}.png")
         print("pose", name, im.size)
     for name, spec in TRAY.items():

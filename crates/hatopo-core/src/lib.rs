@@ -21,7 +21,9 @@ pub use loft::{Broken, Filter, Inbox, Loft};
 pub use model::{
     Archived, CloseReason, Closed, Kind, NewNotice, Notice, NoticeEdit, Origin, Target,
 };
-pub use settings::{MAX_POLL_SECONDS, MAX_REMIND_MINUTES, MIN_POLL_SECONDS, Settings};
+pub use settings::{
+    MASCOT_SCALES, MAX_POLL_SECONDS, MAX_REMIND_MINUTES, MIN_POLL_SECONDS, Settings,
+};
 pub use status::{ClientStatus, read_all_status, read_status, touch};
 pub use when::{DayEdge, parse_date, parse_when};
 
