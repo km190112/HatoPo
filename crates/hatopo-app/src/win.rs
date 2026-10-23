@@ -4,7 +4,12 @@ use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 
-use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, LPARAM, RECT,
+};
+use windows_sys::Win32::Graphics::Gdi::{
+    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
+};
 use windows_sys::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey,
     RegCreateKeyExW, RegDeleteTreeW, RegSetValueExW,
@@ -16,6 +21,7 @@ use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MessageBoxW, SW_SHOWNORMAL,
 };
+use windows_sys::core::BOOL;
 
 fn wide(s: impl AsRef<OsStr>) -> Vec<u16> {
     s.as_ref().encode_wide().chain(Some(0)).collect()
@@ -141,4 +147,51 @@ pub fn register_aumid(aumid: &str, display_name: &str, icon_png: &Path) -> Resul
 pub fn unregister_aumid(aumid: &str) {
     let key_path = wide(format!("Software\\Classes\\AppUserModelId\\{aumid}"));
     unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, key_path.as_ptr()) };
+}
+
+/// `MONITORINFO::dwFlags` のメイン画面の印
+const MONITORINFOF_PRIMARY: u32 = 1;
+
+/// 1 枚のモニター。座標は仮想デスクトップ上の実ピクセル (左上が x, y)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Monitor {
+    /// モニター全体 (left, top, right, bottom)
+    pub rect: [i32; 4],
+    /// タスクバーを除いた作業領域
+    pub work: [i32; 4],
+    pub primary: bool,
+}
+
+unsafe extern "system" fn collect_monitor(
+    h: HMONITOR,
+    _dc: HDC,
+    _rect: *mut RECT,
+    data: LPARAM,
+) -> BOOL {
+    let out = unsafe { &mut *(data as *mut Vec<Monitor>) };
+    let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
+    info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+    if unsafe { GetMonitorInfoW(h, &mut info) } != 0 {
+        let r = |r: RECT| [r.left, r.top, r.right, r.bottom];
+        out.push(Monitor {
+            rect: r(info.rcMonitor),
+            work: r(info.rcWork),
+            primary: info.dwFlags & MONITORINFOF_PRIMARY != 0,
+        });
+    }
+    1
+}
+
+/// 今つながっているモニターの一覧 (取れなければ空)。ケーブルを抜き挿しすると変わる。
+pub fn monitors() -> Vec<Monitor> {
+    let mut v: Vec<Monitor> = Vec::new();
+    unsafe {
+        EnumDisplayMonitors(
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            Some(collect_monitor),
+            &mut v as *mut Vec<Monitor> as LPARAM,
+        );
+    }
+    v
 }

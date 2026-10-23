@@ -27,6 +27,10 @@ pub enum UiMsg {
     ToggleAutostart,
     /// マスコットの大きさ (%) を選んだ
     SetScale(u32),
+    /// キャラクターを選んだ (None は管理者の設定に合わせる)
+    SetCharacter(Option<String>),
+    /// 「HatoPo について」(著作権・ライセンス) を開く
+    OpenAbout,
     Quit,
     /// 共有の exe が新しくなったのでローカルへ入れ替えた。起動し直す
     Restart,
@@ -54,6 +58,8 @@ pub struct Snapshot {
     pub broken: Vec<String>,
     pub settings: Settings,
     pub settings_warning: Option<String>,
+    /// 鳩の巣の `character_icon\` にあるキャラクターの名前 (選ぶ一覧に出す)
+    pub characters: Vec<String>,
     /// 完了などの操作に失敗した理由
     pub action_error: Option<String>,
     pub flash: Option<(Flash, Instant)>,
@@ -283,6 +289,7 @@ impl Worker {
                         .collect();
                     s.snap.settings = settings;
                     s.snap.settings_warning = warning;
+                    s.snap.characters = Settings::characters(self.loft.root());
                     let alive: BTreeSet<String> =
                         s.snap.items.iter().map(|n| n.id.clone()).collect();
                     if s.local.prune(&alive) {
