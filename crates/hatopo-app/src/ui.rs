@@ -7,14 +7,15 @@ use eframe::egui::{
     RichText, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, Vec2, ViewportBuilder,
     ViewportCommand, ViewportId,
 };
-use hatopo_core::{Kind, Notice};
+use hatopo_core::{Kind, MASCOT_SCALES, Notice};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
-use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
+/// 100% のときのマスコットの窓の大きさ
 pub const MASCOT_SIZE: [f32; 2] = [220.0, 210.0];
 const LIST_SIZE: [f32; 2] = [560.0, 640.0];
 /// 一覧の窓を画面の右端からどれだけ離すか
@@ -42,6 +43,12 @@ pub struct App {
     tray_imgs: HashMap<Tray, Rgba>,
     tray: Option<TrayIcon>,
     autostart_item: Option<CheckMenuItem>,
+    /// トレイの「大きさ」の各項目 (チェックを今の大きさに合わせる)
+    scale_items: Vec<(u32, CheckMenuItem)>,
+    /// 窓に当てた大きさ (%)。変わったら窓の大きさと位置を直す
+    scale_applied: Option<u32>,
+    /// Ctrl + ホイールで最後に段を変えた時刻 (1 回の操作で何段も進まないように)
+    last_zoom_step: Option<Instant>,
     tray_key: (Tray, usize, String),
     show_list: bool,
     focus_list: bool,
@@ -79,6 +86,9 @@ impl App {
             tray_imgs: HashMap::new(),
             tray: None,
             autostart_item: None,
+            scale_items: Vec::new(),
+            scale_applied: None,
+            last_zoom_step: None,
             tray_key: (Tray::Inactive, usize::MAX, String::new()),
             show_list: false,
             focus_list: false,
@@ -94,11 +104,12 @@ impl App {
         };
         app.load_character(&cc.egui_ctx, &character);
         let installed = app.restart_exe.is_some();
-        if let Some((tray, item)) =
+        if let Some((tray, item, scales)) =
             build_tray(&cc.egui_ctx, ui_tx, cmd_tx, &app.tray_imgs, installed)
         {
             app.tray = Some(tray);
             app.autostart_item = Some(item);
+            app.scale_items = scales;
         }
         app
     }
@@ -143,6 +154,7 @@ impl App {
                     s.local.save();
                 }
                 UiMsg::ToggleAutostart => self.toggle_autostart(),
+                UiMsg::SetScale(p) => self.set_scale(p),
                 UiMsg::Quit => ctx.send_viewport_cmd(ViewportCommand::Close),
                 UiMsg::Restart => {
                     if let Some(exe) = &self.restart_exe
@@ -153,6 +165,30 @@ impl App {
                 }
             }
         }
+    }
+
+    /// マスコットの大きさを自分の PC に覚える (管理者の既定より優先)。
+    fn set_scale(&mut self, pct: u32) {
+        let mut s = self.shared.lock().unwrap();
+        s.local.mascot_scale = Some(clamp_scale(pct));
+        s.local.save();
+    }
+
+    /// 大きさが変わったら、窓の大きさを変え、右下の角が動かないよう位置も直す。
+    fn apply_scale(&mut self, ctx: &egui::Context, pct: u32, hidden: bool) {
+        if self.scale_applied == Some(pct) {
+            return;
+        }
+        let new_size = mascot_size(pct);
+        if !hidden && let Some(r) = ctx.input(|i| i.viewport().outer_rect) {
+            let pos = anchored_min(r.min, r.size(), new_size);
+            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos));
+        }
+        ctx.send_viewport_cmd(ViewportCommand::InnerSize(new_size));
+        for (p, item) in &self.scale_items {
+            item.set_checked(*p == pct);
+        }
+        self.scale_applied = Some(pct);
     }
 
     /// チェックの状態に合わせてタスクスケジューラへ登録・解除する。失敗したらチェックを戻す。
@@ -237,7 +273,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.handle_messages(ctx);
         // 表示に要るものをまとめて写し取り、ロックを長く持たない
-        let (snap, pending, unseen, hidden, saved_pos) = {
+        let (snap, pending, unseen, hidden, saved_pos, my_scale) = {
             let s = self.shared.lock().unwrap();
             (
                 s.snap.clone(),
@@ -245,8 +281,10 @@ impl eframe::App for App {
                 s.has_unseen(),
                 s.local.mascot_hidden,
                 s.local.mascot_pos,
+                s.local.mascot_scale,
             )
         };
+        let scale_pct = clamp_scale(my_scale.unwrap_or(snap.settings.mascot_scale));
         if snap.settings.character != self.character && snap.loaded {
             let name = snap.settings.character.clone();
             self.load_character(ctx, &name);
@@ -265,6 +303,7 @@ impl eframe::App for App {
             self.hidden_applied = Some(hidden);
             self.last_pos = None;
         }
+        self.apply_scale(ctx, scale_pct, hidden);
         self.remember_position(ctx, hidden);
 
         // --- 状態の決定 ---
@@ -308,7 +347,7 @@ impl eframe::App for App {
         // --- マスコット ---
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
-            .show(ctx, |ui| self.mascot(ui, pose, pending));
+            .show(ctx, |ui| self.mascot(ui, pose, pending, scale_pct));
 
         // --- 一覧の窓 ---
         if self.show_list {
@@ -321,16 +360,18 @@ impl eframe::App for App {
 }
 
 impl App {
-    fn mascot(&mut self, ui: &mut egui::Ui, pose: Pose, pending: usize) {
+    fn mascot(&mut self, ui: &mut egui::Ui, pose: Pose, pending: usize, scale_pct: u32) {
+        let k = scale_pct as f32 / 100.0;
         let full = ui.max_rect();
         let tex = &self.poses[&pose];
         let size = tex.size_vec2();
-        let scale = (130.0 / size.y).min(150.0 / size.x).min(1.0);
-        let img_size = size * scale;
+        // 絵ごとに大きさが違うので、100% で高さ 130・幅 150 に収まるようにそろえてから倍率を掛ける
+        let fit = (130.0 * k / size.y).min(150.0 * k / size.x);
+        let img_size = size * fit;
         let img_rect = Rect::from_min_size(
             Pos2::new(
-                full.right() - img_size.x - 8.0,
-                full.bottom() - img_size.y - 4.0,
+                full.right() - img_size.x - 8.0 * k,
+                full.bottom() - img_size.y - 4.0 * k,
             ),
             img_size,
         );
@@ -343,8 +384,10 @@ impl App {
         );
 
         if pending > 0 {
-            let c = Pos2::new(img_rect.right() - 10.0, img_rect.top() + 12.0);
-            painter.circle(c, 13.0, RED, Stroke::new(2.0_f32, Color32::WHITE));
+            // バッジは小さくしすぎると数字が読めないので 75% より小さくしない
+            let b = k.max(0.75);
+            let c = Pos2::new(img_rect.right() - 10.0 * b, img_rect.top() + 12.0 * b);
+            painter.circle(c, 13.0 * b, RED, Stroke::new(2.0_f32, Color32::WHITE));
             let label = if pending > 99 {
                 "99+".to_string()
             } else {
@@ -354,7 +397,7 @@ impl App {
                 c,
                 Align2::CENTER_CENTER,
                 label,
-                FontId::proportional(14.0),
+                FontId::proportional(14.0 * b),
                 Color32::WHITE,
             );
         }
@@ -368,7 +411,34 @@ impl App {
             self.focus_list = self.show_list;
         }
         let hovered = resp.hovered();
+        // マスコットの上で Ctrl + ホイール: 1 段ずつ大きく / 小さく
+        if hovered {
+            let zoom = ui.input(|i| i.zoom_delta());
+            let settled = self
+                .last_zoom_step
+                .is_none_or(|t| t.elapsed() > Duration::from_millis(300));
+            if zoom != 1.0 && settled {
+                self.last_zoom_step = Some(Instant::now());
+                let next = step_scale(scale_pct, zoom > 1.0);
+                if next != scale_pct {
+                    self.set_scale(next);
+                }
+            }
+        }
         resp.context_menu(|ui| {
+            ui.menu_button("大きさ", |ui| {
+                for p in MASCOT_SCALES {
+                    if ui.radio(p == scale_pct, format!("{p}%")).clicked() {
+                        self.set_scale(p);
+                        ui.close();
+                    }
+                }
+                ui.label(
+                    RichText::new("Ctrl + ホイールでも変えられます")
+                        .small()
+                        .color(MUTED),
+                );
+            });
             if ui.button("一覧を開く").clicked() {
                 self.show_list = true;
                 self.focus_list = true;
@@ -393,7 +463,7 @@ impl App {
             _ => None,
         };
         if let Some(t) = text {
-            draw_bubble(ui, full, img_rect, &t);
+            draw_bubble(ui, full, img_rect, &t, k);
         }
     }
 
@@ -749,12 +819,13 @@ fn banner(ui: &mut egui::Ui, fill: Color32, text: &str) {
     ui.add_space(6.0);
 }
 
-fn draw_bubble(ui: &egui::Ui, full: Rect, bird: Rect, text: &str) {
+fn draw_bubble(ui: &egui::Ui, full: Rect, bird: Rect, text: &str, k: f32) {
     let width = full.width() - 16.0;
     let galley = ui.ctx().fonts(|f| {
         f.layout(
             text.to_string(),
-            FontId::proportional(14.0),
+            // 小さくしても読めるよう 11pt を下限にする
+            FontId::proportional((14.0 * k).clamp(11.0, 24.0)),
             INK,
             width - 20.0,
         )
@@ -792,6 +863,38 @@ fn draw_bubble(ui: &egui::Ui, full: Rect, bird: Rect, text: &str) {
 }
 
 /// 一覧の窓の左上の位置。画面の右端に寄せ、縦は中央。画面が窓より小さいときは左上に揃える。
+/// 選べる段階に丸める (settings.json や state.json に範囲外の値があっても窓が壊れないように)。
+pub fn clamp_scale(pct: u32) -> u32 {
+    *MASCOT_SCALES
+        .iter()
+        .min_by_key(|p| p.abs_diff(pct))
+        .unwrap_or(&100)
+}
+
+/// その大きさのときのマスコットの窓の大きさ。
+pub fn mascot_size(pct: u32) -> Vec2 {
+    Vec2::new(MASCOT_SIZE[0], MASCOT_SIZE[1]) * (pct as f32 / 100.0)
+}
+
+/// 1 段大きく (`up`) / 小さく。端では止まる。
+fn step_scale(pct: u32, up: bool) -> u32 {
+    let i = MASCOT_SCALES
+        .iter()
+        .position(|p| *p == clamp_scale(pct))
+        .unwrap_or(2);
+    let j = if up {
+        (i + 1).min(MASCOT_SCALES.len() - 1)
+    } else {
+        i.saturating_sub(1)
+    };
+    MASCOT_SCALES[j]
+}
+
+/// 窓の大きさを変えても右下の角が動かない左上の位置 (鳩は窓の右下に立っているので)。
+fn anchored_min(old_min: Pos2, old_size: Vec2, new_size: Vec2) -> Pos2 {
+    old_min + (old_size - new_size)
+}
+
 fn list_position(monitor: Vec2) -> [f32; 2] {
     [
         (monitor.x - LIST_SIZE[0] - LIST_MARGIN).max(0.0),
@@ -819,13 +922,16 @@ pub fn window_icon() -> egui::IconData {
     }
 }
 
+/// トレイ本体と、あとでチェックを付け外しする項目 (自動起動・大きさ)
+type TrayParts = (TrayIcon, CheckMenuItem, Vec<(u32, CheckMenuItem)>);
+
 fn build_tray(
     ctx: &egui::Context,
     ui_tx: Sender<UiMsg>,
     cmd_tx: Sender<Cmd>,
     imgs: &HashMap<Tray, Rgba>,
     installed: bool,
-) -> Option<(TrayIcon, CheckMenuItem)> {
+) -> Option<TrayParts> {
     let menu = Menu::new();
     let items = [
         MenuItem::with_id("open", "一覧を開く", true, None),
@@ -835,6 +941,21 @@ fn build_tray(
     for i in &items {
         let _ = menu.append(i);
     }
+    // 大きさ: チェックは最初の描画 (apply_scale) で今の大きさに合わせる
+    let size_menu = Submenu::new("マスコットの大きさ", true);
+    let scales: Vec<(u32, CheckMenuItem)> = MASCOT_SCALES
+        .iter()
+        .map(|p| {
+            (
+                *p,
+                CheckMenuItem::with_id(format!("scale-{p}"), format!("{p}%"), true, false, None),
+            )
+        })
+        .collect();
+    for (_, item) in &scales {
+        let _ = size_menu.append(item);
+    }
+    let _ = menu.append(&size_menu);
     let _ = menu.append(&PredefinedMenuItem::separator());
     // 導入していない (--loft で起動した) ときは登録先の exe が無いので押せなくする
     let autostart = if installed {
@@ -869,7 +990,10 @@ fn build_tray(
                 let _ = cmd_tx.send(Cmd::Refresh);
                 None
             }
-            _ => None,
+            id => id
+                .strip_prefix("scale-")
+                .and_then(|p| p.parse().ok())
+                .map(UiMsg::SetScale),
         };
         if let Some(m) = msg {
             let _ = tx1.send(m);
@@ -898,7 +1022,7 @@ fn build_tray(
         .with_icon(icon)
         .build()
         .ok()
-        .map(|t| (t, autostart))
+        .map(|t| (t, autostart, scales))
 }
 
 /// 日本語を表示するため Windows に入っているフォントを読む (exe を軽く保つため埋め込まない)。
@@ -939,7 +1063,31 @@ fn setup_style(ctx: &egui::Context) {
 
 #[cfg(test)]
 mod tests {
-    use super::{LIST_SIZE, Vec2, link_label, list_position};
+    use super::{
+        LIST_SIZE, Pos2, Vec2, anchored_min, clamp_scale, link_label, list_position, mascot_size,
+        step_scale,
+    };
+
+    #[test]
+    fn scale_steps_and_clamps() {
+        assert_eq!(step_scale(100, true), 125);
+        assert_eq!(step_scale(100, false), 75);
+        assert_eq!(step_scale(200, true), 200, "上の端で止まる");
+        assert_eq!(step_scale(50, false), 50, "下の端で止まる");
+        assert_eq!(clamp_scale(110), 100);
+        assert_eq!(clamp_scale(999), 200);
+        assert_eq!(clamp_scale(0), 50);
+        assert_eq!(mascot_size(200), Vec2::new(440.0, 420.0));
+    }
+
+    #[test]
+    fn resizing_keeps_bottom_right_corner() {
+        let old_min = Pos2::new(1000.0, 800.0);
+        let old = mascot_size(100);
+        let new = mascot_size(150);
+        let m = anchored_min(old_min, old, new);
+        assert_eq!(m + new, old_min + old);
+    }
 
     #[test]
     fn list_opens_at_right_middle_of_screen() {

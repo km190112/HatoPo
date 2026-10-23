@@ -25,6 +25,8 @@ pub enum UiMsg {
     ToggleMascot,
     /// トレイの「ログオン時に自動で起動する」が押された (チェックは既に切り替わっている)
     ToggleAutostart,
+    /// マスコットの大きさ (%) を選んだ
+    SetScale(u32),
     Quit,
     /// 共有の exe が新しくなったのでローカルへ入れ替えた。起動し直す
     Restart,
@@ -186,8 +188,16 @@ pub struct Worker {
 impl Worker {
     pub fn run(self, rx: Receiver<Cmd>) {
         let mut reminder = Reminder::default();
+        let mut last_touch: Option<chrono::NaiveDate> = None;
         loop {
-            self.poll(&mut reminder);
+            let online = self.poll(&mut reminder);
+            // 生存印 (最終アクセス日) は起動直後と、日付が変わって最初の確認だけ書く。
+            // 起動時だけにすると、何日もログオンしたままの PC が管理画面で「アクセス無し」に見える
+            let today = now().date();
+            if online && last_touch != Some(today) {
+                self.touch(None);
+                last_touch = Some(today);
+            }
             let wait = {
                 let s = self.shared.lock().unwrap();
                 Duration::from_secs(s.snap.settings.poll_seconds.max(10))
@@ -200,8 +210,30 @@ impl Worker {
         }
     }
 
+    /// 管理画面が「最終アクセス」「最後に完了した日」「版」を出すための生存印。失敗しても通知は止めない。
+    fn touch(&self, done: Option<&str>) {
+        let _ = hatopo_core::touch(
+            self.loft.root(),
+            &self.me,
+            env!("CARGO_PKG_VERSION"),
+            now(),
+            done,
+        );
+    }
+
     fn complete(&self, id: &str) {
+        let title = {
+            let s = self.shared.lock().unwrap();
+            s.snap
+                .items
+                .iter()
+                .find(|n| n.id == id)
+                .map(|n| n.title.clone())
+        };
         let result = self.loft.close(id, CloseReason::Done, &self.me, now());
+        if result.is_ok() {
+            self.touch(Some(title.as_deref().unwrap_or("")));
+        }
         let mut s = self.shared.lock().unwrap();
         s.snap.busy.remove(id);
         match result {
@@ -225,7 +257,8 @@ impl Worker {
         self.ctx.request_repaint();
     }
 
-    fn poll(&self, reminder: &mut Reminder) {
+    /// 共有に繋がったら `true`。
+    fn poll(&self, reminder: &mut Reminder) -> bool {
         let (settings, warning) = Settings::load(self.loft.root());
         let t = now();
         let result = self.loft.inbox(&self.me.user, &self.me.host, t);
@@ -271,6 +304,7 @@ impl Worker {
         }
         self.ctx.request_repaint();
         self.check_update();
+        self.shared.lock().unwrap().snap.online
     }
 
     fn check_update(&self) {
@@ -341,6 +375,7 @@ mod tests {
             end_at: None,
             updated_at: None,
             updated_by: None,
+            group: None,
         }
     }
 

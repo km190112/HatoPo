@@ -5,9 +5,9 @@
 # 前提: cargo build --workspace --release を済ませてあること。
 # 中身:
 #   HatoLoft\          … 共有フォルダへそのまま置く「鳩の巣」一式
-#     HatoPo.exe / hatopo.dll / hatopo-cli.exe / settings.json
+#     HatoPo.exe / HatoPoAdmin.exe / hatopo.dll / hatopo-cli.exe / settings.json
 #     character_icon\HatoPoBlue\ (poses, tray-icon)
-#     broadcast\ PigeonHole\user\ PigeonHole\device\ archive\
+#     broadcast\ PigeonHole\user\ PigeonHole\device\ archive\ status\
 #   vba\HatoPo.bas     … Excel にインポートするモジュール
 #   はじめにお読みください.txt
 
@@ -22,7 +22,8 @@ $rel = Join-Path $root 'target\release'
 $dist = Join-Path $root 'dist'
 $stage = Join-Path $dist "HatoPo-$Version"
 
-foreach ($f in @('HatoPo.exe', 'hatopo.dll', 'hatopo-cli.exe')) {
+$programs = @('HatoPo.exe', 'HatoPoAdmin.exe', 'hatopo.dll', 'hatopo-cli.exe')
+foreach ($f in $programs) {
     if (-not (Test-Path -LiteralPath (Join-Path $rel $f))) {
         throw "$f がありません。先に cargo build --workspace --release を実行してください。"
     }
@@ -32,7 +33,7 @@ if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -F
 $loft = Join-Path $stage 'HatoLoft'
 New-Item -ItemType Directory -Force $loft | Out-Null
 
-foreach ($f in @('HatoPo.exe', 'hatopo.dll', 'hatopo-cli.exe')) {
+foreach ($f in $programs) {
     Copy-Item -LiteralPath (Join-Path $rel $f) -Destination $loft
 }
 Copy-Item -LiteralPath (Join-Path $root 'loft-template\settings.json') -Destination $loft
@@ -44,6 +45,7 @@ $dirs = @{
     'PigeonHole\user'    = 'ユーザー宛ての便りを、ユーザー名のフォルダに置く場所です。'
     'PigeonHole\device'  = 'PC 宛ての便りを、コンピューター名のフォルダに置く場所です。'
     'archive'            = '完了・期限切れ・削除した便りが月ごとに移る場所です。'
+    'status'             = '各 PC の HatoPo が最終アクセスや版を書く場所です。全員が書けるようにしてください。'
 }
 foreach ($d in $dirs.Keys) {
     $p = Join-Path $loft $d

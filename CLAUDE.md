@@ -20,7 +20,11 @@
 
 ## 構成
 
-`crates/hatopo-core` (ロジックはここだけ) / `hatopo-app` (HatoPo.exe) / `hatopo-dll` (hatopo.dll) / `hatopo-cli`。
+`crates/hatopo-core` (ロジックはここだけ) / `hatopo-app` (HatoPo.exe) / `hatopo-dll` (hatopo.dll) / `hatopo-cli` /
+`hatopo-admin` (HatoPoAdmin.exe。通知・完了の記録・名簿・設定)。
+鳩の巣の `directory.json` (名簿) と `settings.json` は管理画面だけが書く (core の `Directory::save` / `Settings::save` が検査と同時編集の検出をする)。
+`status\user|device\<名前>.json` は各 PC の HatoPo が起動時・日付が変わって最初の確認・完了時に書く生存印 (1 日 1 回。Ken 指摘 2026-10-23 で 15 分ごとから変更) (core の `touch`)。
+`dist\HatoPo-v0.0.0-local\HatoLoft` は Ken の試験導入先 (loft.txt が指す)。`package.ps1` を同じ版名で流すと消えるので、別の版名で流す。
 `loft-template/` は配布する鳩の巣の雛形、`vba/HatoPo.src.txt` が VBA の正 (`.bas` は生成物)。
 
 ## 検証

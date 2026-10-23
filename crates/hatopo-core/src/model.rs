@@ -145,6 +145,9 @@ pub struct Notice {
     pub updated_at: Option<NaiveDateTime>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_by: Option<Origin>,
+    /// 複数の宛先へまとめて送ったときの組の ID。同じ組の完了状況をまとめて見るのに使う
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 impl Notice {

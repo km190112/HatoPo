@@ -15,6 +15,8 @@ pub struct LocalState {
     pub read_broadcasts: BTreeSet<String>,
     pub mascot_pos: Option<[f32; 2]>,
     pub mascot_hidden: bool,
+    /// 自分で選んだマスコットの大きさ (%)。None なら settings.json の既定
+    pub mascot_scale: Option<u32>,
 }
 
 impl LocalState {
