@@ -704,7 +704,7 @@ impl App {
                 let label = if self.about {
                     "一覧へ戻る"
                 } else {
-                    "について"
+                    "HatoPo について"
                 };
                 if ui.button(label).clicked() {
                     self.about = !self.about;

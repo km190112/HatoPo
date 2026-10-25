@@ -48,10 +48,32 @@
 
 ### 管理者 (最初の 1 回)
 
-1. [Releases](https://github.com/km190112/HatoPo/releases/latest) から `HatoPo-vX.Y.Z.zip` を落として展開する
+1. [Releases](https://github.com/km190112/HatoPo/releases/latest) から `HatoPo-vX.Y.Z.zip` を落とし、**展開する前に**ブロックを解除してから展開する (下記)
 2. 中の `HatoLoft` フォルダを共有フォルダに置く (例: `\\server\HatoLoft`)。**利用者全員が読み書きできる**ようにする
 3. `HatoPoAdmin.exe` を開き、［設定］で確認の間隔などを決めて保存し、［ユーザー］［端末］で名簿を作る (下記「管理画面」)
 4. **プログラム 4 本 (`HatoPo.exe` `HatoPoAdmin.exe` `hatopo.dll` `hatopo-cli.exe`) と `settings.json` `directory.json` は、管理者しか書き換えられないようにする** (下記)
+
+#### ダウンロードした zip のブロックを解除する
+
+インターネットから落としたファイルには Windows が「ダウンロードした」という印を付け、そのまま展開すると中の
+`HatoPo.exe` などが起動を止められます (「Windows によって PC が保護されました」など)。
+この印は展開した中身や共有フォルダへのコピーにも引き継がれ、各 PC へのコピーにも付いて回るので、**展開する前に zip で外して**ください。
+
+エクスプローラーなら: zip を右クリック →［プロパティ］→［全般］の下の「セキュリティ」で［許可する］にチェック →［OK］
+
+コマンドプロンプトなら (zip の場所は自分の環境に合わせる):
+
+```bat
+powershell -NoProfile -Command "Unblock-File -LiteralPath '%USERPROFILE%\Downloads\HatoPo-vX.Y.Z.zip'"
+```
+
+**もう展開して共有に置いてしまった**ときは、置いた先のファイルをまとめて解除します:
+
+```bat
+powershell -NoProfile -Command "Get-ChildItem -LiteralPath '\\server\HatoLoft' -Recurse -File | Unblock-File"
+```
+
+確かめ方: `HatoPo.exe` を右クリック →［プロパティ］で、［全般］に「セキュリティ」の欄 (［許可する］のチェック) が出ていなければ解除済みです。
 
 #### プログラムと設定を管理者だけが書き換えられるようにする
 
@@ -85,7 +107,7 @@ for %f in (HatoPo.exe HatoPoAdmin.exe hatopo.dll hatopo-cli.exe settings.json di
 - マスコットの大きさは各自で変えられます: タスクトレイの「マスコットの大きさ」、マスコットの右クリック、マスコットの上で Ctrl + ホイール (50〜200%)。トースト (Windows の通知) の大きさは Windows が決めるので変えられません
 - キャラクターは各自で選べます: タスクトレイの鳩を右クリック →「キャラクター」(マスコットの右クリックでも可)。選んだものはその PC に覚えられ、次に起動したときも同じです。「管理者の設定に合わせる」で、管理者が決めた既定に戻ります
 - モニターをつなぎ替えた (ケーブルの抜き挿し・ドッキングステーション・解像度や拡大率の変更) あとは、マスコットはメイン画面の右下に戻ります。画面から見えない位置に残ったときも戻ります
-- 著作権とライセンスは、一覧の［について］かトレイの「HatoPo について」で見られます (GitHub へのリンク付き)
+- 著作権とライセンスは、一覧の［HatoPo について］かトレイの「HatoPo について」で見られます (GitHub へのリンク付き)
 - 自動起動をやめるとき: タスクトレイの鳩を右クリック →「ログオン時に自動で起動する」のチェックを外す (付け直せば再登録)
 - すっかりやめるとき: `%LOCALAPPDATA%\HatoPo\HatoPo.exe --uninstall` で自動起動とトーストの登録を外し、フォルダを消す
 
