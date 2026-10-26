@@ -48,14 +48,12 @@ impl Data {
 
     /// 宛先の表示名 (`taro (山田 太郎)`)。名簿に無ければ ID だけ。
     pub fn label(&self, kind: Kind, id: &str) -> String {
-        let list = match kind {
-            Kind::User => &self.directory.users,
-            Kind::Device => &self.directory.devices,
-            Kind::Broadcast => return "全員".into(),
-        };
-        match list.iter().find(|m| m.id == id) {
-            Some(m) if !m.name.is_empty() => format!("{id} ({})", m.name),
-            _ => id.to_string(),
+        if kind == Kind::Broadcast {
+            return "全員".into();
+        }
+        match self.directory.name_of(kind, id) {
+            Some(name) => format!("{id} ({name})"),
+            None => id.to_string(),
         }
     }
 }

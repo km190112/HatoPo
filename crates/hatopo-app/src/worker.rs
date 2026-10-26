@@ -3,7 +3,7 @@
 
 use crate::local::LocalState;
 use chrono::{Local, NaiveDateTime};
-use hatopo_core::{CloseReason, Kind, Loft, Notice, Origin, Settings};
+use hatopo_core::{CloseReason, Directory, Kind, Loft, Notice, Origin, Settings};
 use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
@@ -58,6 +58,8 @@ pub struct Snapshot {
     pub broken: Vec<String>,
     pub settings: Settings,
     pub settings_warning: Option<String>,
+    /// 名簿 (差出人の名前を出すのに使う)。無い・読めないときは空か前回の値
+    pub directory: Directory,
     /// 鳩の巣の `character_icon\` にあるキャラクターの名前 (選ぶ一覧に出す)
     pub characters: Vec<String>,
     /// 完了などの操作に失敗した理由
@@ -266,6 +268,8 @@ impl Worker {
     /// 共有に繋がったら `true`。
     fn poll(&self, reminder: &mut Reminder) -> bool {
         let (settings, warning) = Settings::load(self.loft.root());
+        // 名簿が壊れていても名前が出ないだけなので、前回読めた値を使い続ける
+        let directory = Directory::load(self.loft.root()).ok();
         let t = now();
         let result = self.loft.inbox(&self.me.user, &self.me.host, t);
         let mut toasts = Vec::new();
@@ -289,6 +293,9 @@ impl Worker {
                         .collect();
                     s.snap.settings = settings;
                     s.snap.settings_warning = warning;
+                    if let Some(d) = directory {
+                        s.snap.directory = d;
+                    }
                     s.snap.characters = Settings::characters(self.loft.root());
                     let alive: BTreeSet<String> =
                         s.snap.items.iter().map(|n| n.id.clone()).collect();
