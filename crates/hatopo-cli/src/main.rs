@@ -251,6 +251,7 @@ fn init(loft: &Loft) -> Result<(), Error> {
         "PigeonHole/device",
         "archive",
         "status",
+        "read",
         "character_icon",
     ] {
         let p = root.join(d);

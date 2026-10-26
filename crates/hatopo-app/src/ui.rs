@@ -852,17 +852,32 @@ impl App {
         }
     }
 
+    /// 「既読にする / 未読に戻す」。この PC に覚え、鳩の巣へは裏方がすぐ書く (繋がらなければ次の確認で)。
+    fn read_button(&self, ui: &mut egui::Ui, id: &str, read: bool) {
+        let label = if read {
+            "未読に戻す"
+        } else {
+            "既読にする"
+        };
+        if ui.button(label).clicked() {
+            let mut s = self.shared.lock().unwrap();
+            s.local.set_read(id, !read);
+            s.local.save();
+            drop(s);
+            let _ = self.cmd_tx.send(Cmd::Refresh);
+        }
+    }
+
     fn card(&mut self, ui: &mut egui::Ui, n: &Notice, snap: &crate::worker::Snapshot) {
         let (read, seen) = {
             let s = self.shared.lock().unwrap();
-            (
-                s.local.read_broadcasts.contains(&n.id),
-                s.local.seen.contains(&n.id),
-            )
+            (s.local.read.contains(&n.id), s.local.seen.contains(&n.id))
         };
+        // 一斉送信は既読にしたら済み (薄く出す)。個別は既読でも完了するまで普通に出す
+        let settled = read && !n.can_complete();
         let expanded = self.open.as_deref() == Some(n.id.as_str());
         let today = chrono::Local::now().date_naive();
-        let fill = if read {
+        let fill = if settled {
             Color32::from_rgb(0xF0, 0xF2, 0xF5)
         } else {
             Color32::WHITE
@@ -898,11 +913,10 @@ impl App {
                     };
                     ui.painter()
                         .add(egui::Shape::convex_polygon(pts, MUTED, Stroke::NONE));
-                    let title = RichText::new(&n.title).size(15.0).strong().color(if read {
-                        MUTED
-                    } else {
-                        INK
-                    });
+                    let title = RichText::new(&n.title)
+                        .size(15.0)
+                        .strong()
+                        .color(if settled { MUTED } else { INK });
                     let clicked = ui
                         .add(egui::Button::new(title).frame(false).wrap())
                         .clicked();
@@ -922,6 +936,9 @@ impl App {
                 ui.horizontal_wrapped(|ui| {
                     if !seen && !read {
                         ui.label(RichText::new("新着").small().strong().color(BLUE));
+                    }
+                    if read && n.can_complete() {
+                        ui.label(RichText::new("既読").small().strong().color(MUTED));
                     }
                     if let Some(d) = n.due {
                         let late = d <= today;
@@ -991,24 +1008,14 @@ impl App {
                             }
                         } else if busy {
                             ui.label(RichText::new("完了を書き込んでいます…").color(MUTED));
-                        } else if ui.button("完了").clicked() {
-                            self.confirm = Some(n.id.clone());
+                        } else {
+                            if ui.button("完了").clicked() {
+                                self.confirm = Some(n.id.clone());
+                            }
+                            self.read_button(ui, &n.id, read);
                         }
                     } else {
-                        let label = if read {
-                            "未読に戻す"
-                        } else {
-                            "既読にする"
-                        };
-                        if ui.button(label).clicked() {
-                            let mut s = self.shared.lock().unwrap();
-                            if read {
-                                s.local.read_broadcasts.remove(&n.id);
-                            } else {
-                                s.local.read_broadcasts.insert(n.id.clone());
-                            }
-                            s.local.save();
-                        }
+                        self.read_button(ui, &n.id, read);
                         ui.label(
                             RichText::new("全員へのお知らせです。管理者が片付けるまで残ります。")
                                 .small()

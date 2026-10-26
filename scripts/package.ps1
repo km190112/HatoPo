@@ -7,7 +7,7 @@
 #   HatoLoft\          … 共有フォルダへそのまま置く「鳩の巣」一式
 #     HatoPo.exe / HatoPoAdmin.exe / hatopo.dll / hatopo-cli.exe / settings.json
 #     character_icon\HatoPoBlue\ (poses, tray-icon)
-#     broadcast\ PigeonHole\user\ PigeonHole\device\ archive\ status\
+#     broadcast\ PigeonHole\user\ PigeonHole\device\ archive\ status\ read\
 #   vba\HatoPo.bas     … Excel にインポートするモジュール
 #   はじめにお読みください.txt / キャラクター画像の作り方.md / THIRD-PARTY-NOTICES.md
 
@@ -46,6 +46,7 @@ $dirs = @{
     'PigeonHole\device'  = 'PC 宛ての便りを、コンピューター名のフォルダに置く場所です。'
     'archive'            = '完了・期限切れ・削除した便りが月ごとに移る場所です。'
     'status'             = '各 PC の HatoPo が最終アクセスや版を書く場所です。全員が書けるようにしてください。'
+    'read'               = '「既読にする」を押した印を置く場所です。全員が書けるようにしてください。'
 }
 foreach ($d in $dirs.Keys) {
     $p = Join-Path $loft $d

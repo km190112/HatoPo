@@ -2,9 +2,10 @@
 
 use chrono::NaiveDateTime;
 use hatopo_core::{
-    Broken, ClientStatus, Directory, Filter, Kind, Loft, Member, Notice, Settings, read_all_status,
+    Broken, ClientStatus, Directory, Filter, Kind, Loft, Member, Notice, ReadMark, Settings,
+    read_all_status,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[derive(Default)]
 pub struct Data {
@@ -17,6 +18,8 @@ pub struct Data {
     pub settings: Settings,
     pub settings_warning: Option<String>,
     pub months: Vec<String>,
+    /// 通知 ID ごとの既読の印
+    pub reads: HashMap<String, Vec<ReadMark>>,
     pub error: Option<String>,
 }
 
@@ -43,7 +46,19 @@ impl Data {
         d.settings = s;
         d.settings_warning = w;
         d.months = loft.archive_months().unwrap_or_default();
+        d.reads = d
+            .notices
+            .iter()
+            .map(|n| (n.id.clone(), loft.readers(&n.id).unwrap_or_default()))
+            .collect();
         d
+    }
+
+    /// この通知の宛先ごとの既読 (未読が先)。
+    pub fn read_rows(&self, n: &Notice) -> Vec<ReadRow> {
+        let none = Vec::new();
+        let readers = self.reads.get(&n.id).unwrap_or(&none);
+        read_rows(n, readers, &self.directory, &self.statuses)
     }
 
     /// 宛先の表示名 (`taro (山田 太郎)`)。名簿に無ければ ID だけ。
@@ -124,6 +139,68 @@ fn blank(member: Member, registered: bool) -> MemberRow {
         counterpart: String::new(),
         version: String::new(),
         pending: 0,
+    }
+}
+
+/// 「読んだ人」の表の 1 行。`mark` が無ければ未読。
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReadRow {
+    pub user: String,
+    pub mark: Option<ReadMark>,
+}
+
+/// 誰が読んで誰が読んでいないか。
+/// - 一斉送信: 名簿のユーザーと、HatoPo を起動したことがある (生存印のある) ユーザー全員
+/// - ユーザー宛: その人
+/// - 端末宛: 宛先が人ではないので、その PC で既読にした人だけ (誰もいなければ空)
+///
+/// 上の対象に入らない人の印 (名簿から外した人など) も、読んだ事実として並べる。
+pub fn read_rows(
+    n: &Notice,
+    readers: &[ReadMark],
+    dir: &Directory,
+    statuses: &[ClientStatus],
+) -> Vec<ReadRow> {
+    let mut users: BTreeSet<String> = match n.target.kind {
+        Kind::Broadcast => dir
+            .users
+            .iter()
+            .map(|m| m.id.clone())
+            .chain(
+                statuses
+                    .iter()
+                    .filter(|s| s.kind == Kind::User)
+                    .map(|s| s.id.clone()),
+            )
+            .collect(),
+        Kind::User => [n.target.name.clone()].into(),
+        Kind::Device => BTreeSet::new(),
+    };
+    users.extend(readers.iter().map(|r| r.user.clone()));
+    let mut rows: Vec<ReadRow> = users
+        .into_iter()
+        .map(|user| ReadRow {
+            mark: readers.iter().find(|r| r.user == user).cloned(),
+            user,
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        a.mark
+            .is_some()
+            .cmp(&b.mark.is_some())
+            .then(a.user.cmp(&b.user))
+    });
+    rows
+}
+
+/// 一覧の「既読」の列。一斉は `3/10`、ユーザー宛は 既読 / 未読、端末宛は読んだ人数。
+pub fn read_summary(kind: Kind, rows: &[ReadRow]) -> String {
+    let read = rows.iter().filter(|r| r.mark.is_some()).count();
+    match kind {
+        Kind::Broadcast => format!("{read}/{}", rows.len()),
+        _ if read == 0 => "未読".into(),
+        Kind::User => "既読".into(),
+        Kind::Device => format!("既読 {read} 人"),
     }
 }
 
@@ -226,6 +303,70 @@ mod tests {
         let devs = member_rows(Kind::Device, &dir, &statuses, &notices);
         assert_eq!(devs.len(), 1);
         assert_eq!(devs[0].pending, 1);
+    }
+
+    fn mark(user: &str, h: u32) -> ReadMark {
+        ReadMark {
+            user: user.into(),
+            host: "pc-1".into(),
+            at: at(h),
+        }
+    }
+
+    fn users(rows: &[ReadRow]) -> Vec<(&str, bool)> {
+        rows.iter()
+            .map(|r| (r.user.as_str(), r.mark.is_some()))
+            .collect()
+    }
+
+    #[test]
+    fn broadcast_readers_cover_directory_and_status_users_unread_first() {
+        let dir = Directory {
+            users: vec![Member {
+                id: "hanako".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let statuses = [
+            status(Kind::User, "taro", 10),
+            status(Kind::Device, "pc-1", 10),
+        ];
+        let b = notice(Kind::Broadcast, "");
+        let none = read_rows(&b, &[], &dir, &statuses);
+        assert_eq!(users(&none), [("hanako", false), ("taro", false)]);
+        assert_eq!(read_summary(Kind::Broadcast, &none), "0/2");
+
+        // 名簿から外した jiro の印も、読んだ事実として出す
+        let rows = read_rows(&b, &[mark("taro", 9), mark("jiro", 8)], &dir, &statuses);
+        assert_eq!(
+            users(&rows),
+            [("hanako", false), ("jiro", true), ("taro", true)]
+        );
+        assert_eq!(read_summary(Kind::Broadcast, &rows), "2/3");
+        assert!(read_rows(&b, &[], &Directory::default(), &[]).is_empty());
+    }
+
+    #[test]
+    fn personal_and_device_readers() {
+        let u = notice(Kind::User, "taro");
+        let rows = read_rows(&u, &[], &Directory::default(), &[]);
+        assert_eq!(users(&rows), [("taro", false)]);
+        assert_eq!(read_summary(Kind::User, &rows), "未読");
+        let rows = read_rows(&u, &[mark("taro", 9)], &Directory::default(), &[]);
+        assert_eq!(read_summary(Kind::User, &rows), "既読");
+
+        let d = notice(Kind::Device, "pc-1");
+        let rows = read_rows(&d, &[], &Directory::default(), &[]);
+        assert!(rows.is_empty(), "端末宛は読んだ人だけ");
+        assert_eq!(read_summary(Kind::Device, &rows), "未読");
+        let rows = read_rows(
+            &d,
+            &[mark("taro", 9), mark("jiro", 10)],
+            &Directory::default(),
+            &[],
+        );
+        assert_eq!(read_summary(Kind::Device, &rows), "既読 2 人");
     }
 
     #[test]

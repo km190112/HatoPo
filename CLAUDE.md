@@ -23,8 +23,10 @@
 `crates/hatopo-core` (ロジックはここだけ) / `hatopo-app` (HatoPo.exe) / `hatopo-dll` (hatopo.dll) / `hatopo-cli` /
 `hatopo-admin` (HatoPoAdmin.exe。通知・完了の記録・名簿・設定)。
 鳩の巣の `directory.json` (名簿) と `settings.json` は管理画面だけが書く (core の `Directory::save` / `Settings::save` が検査と同時編集の検出をする)。
+`read\<通知ID>\<ユーザー>.json` は「既読にする」を押した印 (core の `read.rs`。開いただけでは書かない Ken 決定 2026-10-27)。`close` で archive の `read_by` へ写して片付ける。利用者側は `state.json` の `read_dirty` に溜め、裏方が次の確認で書く。
+利用者の HatoPo は差出人の名前を出すために `directory.json` を読む (読むだけ)。
 `status\user|device\<名前>.json` は各 PC の HatoPo が起動時・日付が変わって最初の確認・完了時に書く生存印 (1 日 1 回。Ken 指摘 2026-10-23 で 15 分ごとから変更) (core の `touch`)。
-`dist\HatoPo-v0.0.0-local\HatoLoft` は Ken の試験導入先 (loft.txt が指す)。`package.ps1` を同じ版名で流すと消えるので、別の版名で流す。
+Ken は Releases の zip を Desktop に展開して試験導入している (loft.txt が指す)。そこには触らない。画面の確認は scratchpad に試験用の鳩の巣を作り、`LOCALAPPDATA` を差し替えて `--loft` で起動する (常駐中の HatoPo は止めて、終わったら起こし直す)。
 マスコットは画面構成 (モニター) が変わると、落ち着くのを待ってメイン画面の作業領域の右下へ戻す (`place.rs` が座標の計算、`win::monitors` が構成の取得)。一覧の窓はマスコットの隣に開く。
 利用者が選んだキャラクターは `state.json` の `character` (None なら settings.json の既定)。著作権・ライセンスの画面は一覧の［HatoPo について］。
 `THIRD-PARTY-NOTICES.md` は `python scripts/third_party_notices.py` の生成物 (依存を変えたら流し直す)。AI で絵を増やす手順は `docs/キャラクター画像の作り方.md`。

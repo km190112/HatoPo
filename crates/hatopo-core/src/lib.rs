@@ -11,6 +11,7 @@ mod error;
 mod id;
 mod loft;
 mod model;
+mod read;
 mod settings;
 mod status;
 mod when;
@@ -19,7 +20,7 @@ pub use directory::{DIRECTORY_FILE, Directory, Member};
 pub use error::Error;
 pub use loft::{Broken, Filter, Inbox, Loft};
 pub use model::{
-    Archived, CloseReason, Closed, Kind, NewNotice, Notice, NoticeEdit, Origin, Target,
+    Archived, CloseReason, Closed, Kind, NewNotice, Notice, NoticeEdit, Origin, ReadMark, Target,
 };
 pub use settings::{
     MASCOT_SCALES, MAX_POLL_SECONDS, MAX_REMIND_MINUTES, MIN_POLL_SECONDS, Settings,
