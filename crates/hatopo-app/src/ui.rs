@@ -8,7 +8,7 @@ use eframe::egui::{
     RichText, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, Vec2, ViewportBuilder,
     ViewportCommand, ViewportId,
 };
-use hatopo_core::{Kind, MASCOT_SCALES, Notice};
+use hatopo_core::{Directory, Kind, MASCOT_SCALES, Notice, Origin};
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
@@ -933,9 +933,8 @@ impl App {
                     }
                     ui.label(
                         RichText::new(format!(
-                            "差出人 {} ({}) ・ {}",
-                            n.created_by.user,
-                            n.created_by.host,
+                            "差出人 {} ・ {}",
+                            sender_label(&n.created_by, &snap.directory),
                             n.start_at.format("%m/%d %H:%M")
                         ))
                         .small()
@@ -1027,6 +1026,21 @@ fn section_title(k: Kind) -> &'static str {
         Kind::Device => "この PC への便り",
         Kind::User => "あなたへの便り",
     }
+}
+
+/// 差出人の表示。名簿に名前があれば `山田 太郎 (taro) ・ 組立 2 班 (pc-0123)`。
+/// どちらも名前が無ければ今までどおり `taro (pc-0123)`。
+pub fn sender_label(by: &Origin, dir: &Directory) -> String {
+    let user = dir.name_of(Kind::User, &by.user);
+    let host = dir.name_of(Kind::Device, &by.host);
+    if user.is_none() && host.is_none() {
+        return format!("{} ({})", by.user, by.host);
+    }
+    let one = |name: Option<&str>, id: &str| match name {
+        Some(name) => format!("{name} ({id})"),
+        None => id.to_string(),
+    };
+    format!("{} ・ {}", one(user, &by.user), one(host, &by.host))
 }
 
 /// ボタンに出す短い名前。パスならファイル名、URL ならそのまま。
@@ -1377,8 +1391,42 @@ fn setup_style(ctx: &egui::Context) {
 mod tests {
     use super::{
         Pos2, Vec2, anchored_min, character_choices, clamp_scale, link_label, mascot_size,
-        step_scale,
+        sender_label, step_scale,
     };
+    use hatopo_core::{Directory, Member, Origin};
+
+    #[test]
+    fn sender_shows_directory_names_first_and_falls_back_to_ids() {
+        let by = Origin {
+            user: "taro".into(),
+            host: "pc-0123".into(),
+        };
+        let m = |id: &str, name: &str| Member {
+            id: id.into(),
+            name: name.into(),
+            note: String::new(),
+        };
+        let full = Directory {
+            users: vec![m("taro", "山田 太郎")],
+            devices: vec![m("pc-0123", "組立 2 班")],
+            ..Default::default()
+        };
+        assert_eq!(
+            sender_label(&by, &full),
+            "山田 太郎 (taro) ・ 組立 2 班 (pc-0123)"
+        );
+        let user_only = Directory {
+            users: vec![m("taro", "山田 太郎")],
+            devices: vec![m("pc-0123", "")],
+            ..Default::default()
+        };
+        assert_eq!(sender_label(&by, &user_only), "山田 太郎 (taro) ・ pc-0123");
+        assert_eq!(
+            sender_label(&by, &Directory::default()),
+            "taro (pc-0123)",
+            "名簿が無ければ今までと同じ"
+        );
+    }
 
     #[test]
     fn scale_steps_and_clamps() {

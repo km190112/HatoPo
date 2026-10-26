@@ -1,11 +1,11 @@
 //! 名簿 (`directory.json`)。通知先にするユーザーと端末の一覧。管理画面だけが書く。
 //!
-//! 利用者の HatoPo は名簿を読まない (名簿に無い人・PC にも通知は届く)。
 //! 名簿は管理者が宛先を選ぶためと、最終アクセスなどを一覧にするためのもの。
+//! 利用者の HatoPo は差出人の名前を出すために読むだけ (名簿に無い人・PC にも通知は届く)。
 
 use crate::loft::{Lock, read_json, to_json, write_atomic};
 use crate::model::normalize_name;
-use crate::{Error, Origin, Result};
+use crate::{Error, Kind, Origin, Result};
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -72,6 +72,20 @@ impl Directory {
         next.updated_by = Some(by.clone());
         write_atomic(&p, &to_json(&next)?)?;
         Ok(next)
+    }
+
+    /// 名簿に載っている名前。載っていない・名前が空なら `None`。ID の大文字小文字は問わない。
+    pub fn name_of(&self, kind: Kind, id: &str) -> Option<&str> {
+        let list = match kind {
+            Kind::User => &self.users,
+            Kind::Device => &self.devices,
+            Kind::Broadcast => return None,
+        };
+        let id = id.trim().to_lowercase();
+        list.iter()
+            .find(|m| m.id == id)
+            .map(|m| m.name.as_str())
+            .filter(|n| !n.is_empty())
     }
 
     /// ID を小文字にそろえ、空・パスを壊す文字・重複を弾く。並びは ID 順にする。
@@ -187,6 +201,26 @@ mod tests {
             !d.path().join(DIRECTORY_FILE).exists(),
             "失敗したら何も書かない"
         );
+    }
+
+    #[test]
+    fn name_of_finds_registered_names_only() {
+        let dir = Directory {
+            users: vec![member("taro", "山田 太郎"), member("jiro", "")],
+            devices: vec![member("pc-0123", "組立 2 班")],
+            ..Default::default()
+        };
+        assert_eq!(dir.name_of(Kind::User, "taro"), Some("山田 太郎"));
+        assert_eq!(dir.name_of(Kind::User, "TARO"), Some("山田 太郎"));
+        assert_eq!(dir.name_of(Kind::Device, "PC-0123"), Some("組立 2 班"));
+        assert_eq!(dir.name_of(Kind::User, "jiro"), None, "名前が空");
+        assert_eq!(dir.name_of(Kind::User, "hanako"), None, "名簿に無い");
+        assert_eq!(
+            dir.name_of(Kind::Device, "taro"),
+            None,
+            "ユーザーと端末は別"
+        );
+        assert_eq!(Directory::default().name_of(Kind::User, "taro"), None);
     }
 
     #[test]
