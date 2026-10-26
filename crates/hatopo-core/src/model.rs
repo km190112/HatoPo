@@ -230,12 +230,23 @@ pub struct Closed {
     pub at: NaiveDateTime,
 }
 
-/// archive に置く形。通知の中身に「いつ誰がなぜ閉じたか」を足したもの。
+/// 既読の印 1 つ。利用者が「既読にする」を押したときに書く (開いただけでは書かない)。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ReadMark {
+    pub user: String,
+    pub host: String,
+    pub at: NaiveDateTime,
+}
+
+/// archive に置く形。通知の中身に「いつ誰がなぜ閉じたか」と「閉じたときに読んでいた人」を足したもの。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Archived {
     #[serde(flatten)]
     pub notice: Notice,
     pub closed: Closed,
+    /// 既読の印を始めた版 (v0.4.0) より前の archive には無い
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub read_by: Vec<ReadMark>,
 }
 
 #[cfg(test)]

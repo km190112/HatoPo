@@ -3,7 +3,7 @@
 //! 共有フォルダへの読み書きは画面のスレッドで行う (管理者が 1〜2 人で使う道具なので、
 //! 遅い共有で一瞬固まるのは許す)。読み直しは［再読込］と、書き込んだ直後に行う。
 
-use crate::data::{Data, MemberRow, is_older, member_rows};
+use crate::data::{Data, MemberRow, is_older, member_rows, read_summary};
 use crate::form::NoticeForm;
 use chrono::{Local, NaiveDateTime};
 use eframe::egui::{self, Color32, RichText};
@@ -499,6 +499,7 @@ impl AdminApp {
                 .column(Column::exact(124.0))
                 .column(Column::exact(84.0))
                 .column(Column::exact(70.0))
+                .column(Column::exact(76.0))
                 .column(Column::remainder().at_least(60.0))
                 .header(24.0, |mut h| {
                     for c in [
@@ -509,6 +510,7 @@ impl AdminApp {
                         "終了",
                         "依頼期限",
                         "状態",
+                        "既読",
                         "組",
                     ] {
                         h.col(|ui| {
@@ -545,6 +547,9 @@ impl AdminApp {
                             row.col(|ui| {
                                 let (s, c) = state_of(n, t);
                                 ui.colored_label(c, s);
+                            });
+                            row.col(|ui| {
+                                ui.label(read_summary(n.target.kind, &self.data.read_rows(n)));
                             });
                             row.col(|ui| {
                                 if n.group.is_some() {
@@ -638,6 +643,11 @@ impl AdminApp {
             }
         });
 
+        // まとめ送信は下の「同じ送信の状況」に既読も出すので、ここは 1 件ずつ送ったものだけ
+        if self.group_view.is_none() {
+            self.readers_table(ui, &n);
+        }
+
         if let Some((_, active, closed)) = &self.group_view {
             ui.add_space(12.0);
             ui.separator();
@@ -659,8 +669,17 @@ impl AdminApp {
                 .show(ui, |ui| {
                     for a in active {
                         ui.label(self.data.label(a.target.kind, &a.target.name));
-                        ui.colored_label(WARN, "未完了");
-                        ui.label("");
+                        let rows = self.data.read_rows(a);
+                        match rows.iter().find_map(|r| r.mark.as_ref()) {
+                            Some(m) => {
+                                ui.colored_label(WARN, "既読・未完了");
+                                ui.label(format!("{} {}@{}", fmt(m.at), m.user, m.host));
+                            }
+                            None => {
+                                ui.colored_label(BAD, "未読");
+                                ui.label("");
+                            }
+                        }
                         ui.end_row();
                     }
                     for a in closed {
@@ -681,6 +700,47 @@ impl AdminApp {
                     }
                 });
         }
+    }
+
+    /// 「既読にする」を押した人と、まだの人 (未読が上)。
+    fn readers_table(&self, ui: &mut egui::Ui, n: &Notice) {
+        let rows = self.data.read_rows(n);
+        let read = rows.iter().filter(|r| r.mark.is_some()).count();
+        ui.add_space(12.0);
+        ui.separator();
+        let head = match n.target.kind {
+            Kind::Device if rows.is_empty() => {
+                "既読: この PC でまだ誰も既読にしていません".to_string()
+            }
+            Kind::Device => format!("既読: この PC で {read} 人が既読にしました"),
+            _ => format!("既読: {} 人中 {read} 人", rows.len()),
+        };
+        ui.label(RichText::new(head).strong());
+        if n.target.kind == Kind::Broadcast && rows.is_empty() {
+            ui.label(
+                RichText::new("名簿にユーザーがおらず、HatoPo を起動した人もまだいません。")
+                    .color(MUTED),
+            );
+        }
+        egui::Grid::new("readers")
+            .striped(true)
+            .num_columns(3)
+            .show(ui, |ui| {
+                for r in &rows {
+                    ui.label(self.data.label(Kind::User, &r.user));
+                    match &r.mark {
+                        Some(m) => {
+                            ui.colored_label(OK, "既読");
+                            ui.label(format!("{} ({})", fmt(m.at), m.host));
+                        }
+                        None => {
+                            ui.colored_label(BAD, "未読");
+                            ui.label("");
+                        }
+                    }
+                    ui.end_row();
+                }
+            });
     }
 
     fn save_edit(&mut self, n: &Notice, others: &[Notice]) {
@@ -1481,6 +1541,7 @@ fn init_loft(root: &std::path::Path, settings: &Settings) -> Result<(), String> 
         "PigeonHole/device",
         "archive",
         "status",
+        "read",
         "character_icon",
     ] {
         let p = root.join(d);
@@ -1511,6 +1572,7 @@ mod tests {
             "PigeonHole/device",
             "archive",
             "status",
+            "read",
         ] {
             assert!(d.path().join(p).is_dir(), "{p}");
         }

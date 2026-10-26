@@ -1,7 +1,7 @@
 //! 裏方のスレッド。共有フォルダを定期的に見に行き、完了の書き込みもここで行う。
 //! 遅い共有で画面が固まらないように、画面のスレッドからはファイルに触らない。
 
-use crate::local::LocalState;
+use crate::local::{LocalState, ReadSync};
 use chrono::{Local, NaiveDateTime};
 use hatopo_core::{CloseReason, Directory, Kind, Loft, Notice, Origin, Settings};
 use std::collections::{BTreeSet, HashSet};
@@ -77,15 +77,15 @@ pub struct Shared {
 impl Shared {
     /// 対応が要る件数 (既読にした一斉送信を除く)。
     pub fn pending(&self) -> usize {
-        pending(&self.snap.items, &self.local.read_broadcasts).count()
+        pending(&self.snap.items, &self.local.read).count()
     }
 
     pub fn has_unseen(&self) -> bool {
-        pending(&self.snap.items, &self.local.read_broadcasts)
-            .any(|n| !self.local.seen.contains(&n.id))
+        pending(&self.snap.items, &self.local.read).any(|n| !self.local.seen.contains(&n.id))
     }
 }
 
+/// 件数とトーストの対象。既読の一斉送信だけ外す (個別は既読でも完了するまで数える)。
 fn pending<'a>(
     items: &'a [Notice],
     read: &'a BTreeSet<String>,
@@ -272,8 +272,7 @@ impl Worker {
         let directory = Directory::load(self.loft.root()).ok();
         let t = now();
         let result = self.loft.inbox(&self.me.user, &self.me.host, t);
-        let mut toasts = Vec::new();
-        {
+        let read_ok = {
             let mut s = self.shared.lock().unwrap();
             s.snap.loaded = true;
             match result {
@@ -302,16 +301,23 @@ impl Worker {
                     if s.local.prune(&alive) {
                         s.local.save();
                     }
-                    let pend: Vec<&Notice> =
-                        pending(&s.snap.items, &s.local.read_broadcasts).collect();
-                    toasts = reminder.plan(&pend, t, s.snap.settings.remind_minutes);
+                    true
                 }
                 Err(e) => {
                     // 最後に読めた一覧は残して出し続ける
                     s.snap.online = false;
                     s.snap.offline_reason = Some(e.to_string());
+                    false
                 }
             }
+        };
+        let mut toasts = Vec::new();
+        if read_ok {
+            // 別の PC で既読にした一斉送信を鳴らさないよう、トーストの前に照らし合わせる
+            self.sync_reads();
+            let s = self.shared.lock().unwrap();
+            let pend: Vec<&Notice> = pending(&s.snap.items, &s.local.read).collect();
+            toasts = reminder.plan(&pend, t, s.snap.settings.remind_minutes);
         }
         for m in toasts {
             self.toast(&m);
@@ -319,6 +325,45 @@ impl Worker {
         self.ctx.request_repaint();
         self.check_update();
         self.shared.lock().unwrap().snap.online
+    }
+
+    /// 既読の印を鳩の巣と照らし合わせる。共有の読み書きは画面のロックを持たずに行う。
+    /// 押したがまだ書けていないものを書き、残りは鳩の巣の状態 (別の PC で押したもの) に合わせる。
+    fn sync_reads(&self) {
+        let (read, dirty, ids) = {
+            let s = self.shared.lock().unwrap();
+            (
+                s.local.read.clone(),
+                s.local.read_dirty.clone(),
+                s.snap
+                    .items
+                    .iter()
+                    .map(|n| n.id.clone())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let mut sync = ReadSync::default();
+        for id in &dirty {
+            let state = read.contains(id);
+            let r = if state {
+                self.loft.mark_read(id, &self.me, now()).map(|_| ())
+            } else {
+                self.loft.unmark_read(id, &self.me.user)
+            };
+            // NotFound は通知がもう無い (完了・削除された)。書く先が無いので済んだことにする
+            if matches!(r, Ok(()) | Err(hatopo_core::Error::NotFound { .. })) {
+                sync.pushed.push((id.clone(), state));
+            }
+        }
+        for id in ids.iter().filter(|id| !dirty.contains(*id)) {
+            if let Ok(b) = self.loft.has_read(id, &self.me.user) {
+                sync.remote.push((id.clone(), b));
+            }
+        }
+        let mut s = self.shared.lock().unwrap();
+        if s.local.apply_sync(&sync) {
+            s.local.save();
+        }
     }
 
     fn check_update(&self) {
@@ -457,7 +502,7 @@ mod tests {
     }
 
     #[test]
-    fn read_broadcasts_do_not_count_as_pending() {
+    fn read_broadcasts_do_not_count_but_read_personal_ones_do() {
         let mut b = n("b");
         b.target = Target::broadcast();
         let u = n("u");
@@ -467,12 +512,12 @@ mod tests {
                 ..Default::default()
             },
             local: LocalState {
-                read_broadcasts: ["b".to_string()].into(),
+                read: ["b".to_string(), "u".to_string()].into(),
                 seen: ["u".to_string()].into(),
                 ..Default::default()
             },
         };
-        assert_eq!(shared.pending(), 1);
+        assert_eq!(shared.pending(), 1, "既読の個別は完了するまで数える");
         assert!(!shared.has_unseen());
     }
 }

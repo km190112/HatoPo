@@ -6,6 +6,7 @@
 //!   PigeonHole\device\<host>\{id}.json
 //!   PigeonHole\user\<user>\{id}.json
 //!   archive\yyyy-MM\{id}.json
+//!   read\{id}\<user>.json          既読の印 (read.rs)
 //! ```
 
 use crate::error::io;
@@ -266,8 +267,11 @@ impl Loft {
                 by: by.clone(),
                 at: now,
             },
+            read_by: self.readers(id).unwrap_or_default(),
         };
         write_atomic(&dest, &to_json(&archived)?)?;
+        // 読んだ人は archive に写したので、印のフォルダは片付ける (溜めない)
+        self.clear_reads(id);
         Ok(archived)
     }
 
@@ -432,7 +436,7 @@ impl Loft {
         Ok(dirs)
     }
 
-    fn locate(&self, id: &str) -> Result<PathBuf> {
+    pub(crate) fn locate(&self, id: &str) -> Result<PathBuf> {
         if !is_valid_id(id) {
             return Err(Error::Invalid(format!(
                 "通知 ID「{id}」の形が正しくありません。"
@@ -469,7 +473,7 @@ fn sort_for_display(v: &mut [Notice]) {
 }
 
 /// `*.json` だけ。`.` で始まる一時ファイル・ロックファイルは除く。フォルダが無ければ空。
-fn json_files(dir: &Path) -> Result<Vec<PathBuf>> {
+pub(crate) fn json_files(dir: &Path) -> Result<Vec<PathBuf>> {
     let rd = match fs::read_dir(dir) {
         Ok(rd) => rd,
         Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
