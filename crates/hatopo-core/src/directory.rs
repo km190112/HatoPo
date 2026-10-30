@@ -9,9 +9,23 @@ use crate::{Error, Kind, Origin, Result};
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 pub const DIRECTORY_FILE: &str = "directory.json";
+
+/// CSV の 1 列目がこれに一致したら、1 行目を見出しとして読み飛ばす。
+const HEADER_WORDS: &[&str] = &[
+    "ログオン名",
+    "ユーザー名",
+    "ユーザー",
+    "ログイン名",
+    "コンピューター名",
+    "コンピュータ名",
+    "端末名",
+    "pc名",
+    "id",
+];
 
 /// 名簿の 1 行。`id` はログオン名かコンピューター名 (小文字に正規化して持つ)。
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -109,6 +123,105 @@ impl Directory {
     }
 }
 
+/// 名簿を一括登録するために CSV で渡された 1 行が読めなかった理由。
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImportError {
+    /// 1 始まりの物理行番号 (見出し行も数える)。
+    pub line: usize,
+    pub raw: String,
+    pub detail: String,
+}
+
+impl fmt::Display for ImportError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}行目「{}」: {}", self.line, self.raw, self.detail)
+    }
+}
+
+/// CSV からの名簿一括取り込みの結果。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ImportResult {
+    pub members: Vec<Member>,
+    pub errors: Vec<ImportError>,
+}
+
+/// UTF-8 (BOM 可) / Shift-JIS (CP932) を自動判定してテキストに戻す。
+pub fn decode_csv_bytes(bytes: &[u8]) -> String {
+    if let Some(rest) = bytes.strip_prefix(b"\xEF\xBB\xBF") {
+        return String::from_utf8_lossy(rest).into_owned();
+    }
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        return s.to_string();
+    }
+    encoding_rs::SHIFT_JIS.decode(bytes).0.into_owned()
+}
+
+/// CSV (`ログオン名,名前,メモ` 列順) を読む。見出し行は自動で読み飛ばし、
+/// 1 行ごとに ID を検査する。不正な行は取り込まずエラーに積み、有効な行だけ返す。
+pub fn import_members_csv(bytes: &[u8]) -> ImportResult {
+    let text = decode_csv_bytes(bytes);
+    let mut rdr = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .flexible(true)
+        .from_reader(text.as_bytes());
+
+    let mut result = ImportResult::default();
+    for (i, rec) in rdr.records().enumerate() {
+        let line = i + 1;
+        let rec = match rec {
+            Ok(rec) => rec,
+            Err(e) => {
+                result.errors.push(ImportError {
+                    line,
+                    raw: String::new(),
+                    detail: format!("CSV として読めません: {e}"),
+                });
+                continue;
+            }
+        };
+        if i == 0 && is_header_row(&rec) {
+            continue;
+        }
+        let id_raw = rec.get(0).unwrap_or("").trim();
+        let name = rec.get(1).unwrap_or("").trim().to_string();
+        let note = rec.get(2).unwrap_or("").trim().to_string();
+        if id_raw.is_empty() && name.is_empty() && note.is_empty() {
+            continue;
+        }
+        match normalize_name(id_raw) {
+            Ok(id) => result.members.push(Member { id, name, note }),
+            Err(e) => result.errors.push(ImportError {
+                line,
+                raw: rec.iter().collect::<Vec<_>>().join(","),
+                detail: e.to_string(),
+            }),
+        }
+    }
+    result
+}
+
+fn is_header_row(rec: &csv::StringRecord) -> bool {
+    let first = rec.get(0).unwrap_or("").trim();
+    HEADER_WORDS.iter().any(|w| first.eq_ignore_ascii_case(w))
+}
+
+/// CSV から取り込んだ行を既存の名簿にマージする。ID が一致する行は上書き (新しい名前・メモに変える)、
+/// 無ければ追加する。戻り値は `(新規件数, 上書き件数)`。
+pub fn merge_members(list: &mut Vec<Member>, imported: &[Member]) -> (usize, usize) {
+    let mut added = 0;
+    let mut updated = 0;
+    for m in imported {
+        if let Some(existing) = list.iter_mut().find(|x| x.id == m.id) {
+            *existing = m.clone();
+            updated += 1;
+        } else {
+            list.push(m.clone());
+            added += 1;
+        }
+    }
+    (added, updated)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,11 +241,11 @@ mod tests {
         }
     }
 
-    fn member(id: &str, name: &str) -> Member {
+    fn member(id: &str, name: &str, note: &str) -> Member {
         Member {
             id: id.into(),
             name: name.into(),
-            note: String::new(),
+            note: note.into(),
         }
     }
 
@@ -146,8 +259,11 @@ mod tests {
     fn save_round_trips_normalized_and_sorted() {
         let d = tempfile::tempdir().unwrap();
         let dir = Directory {
-            users: vec![member(" Taro ", "山田 太郎"), member("Hanako", "佐藤 花子")],
-            devices: vec![member("PC-0123", "組立 2 班")],
+            users: vec![
+                member(" Taro ", "山田 太郎", ""),
+                member("Hanako", "佐藤 花子", ""),
+            ],
+            devices: vec![member("PC-0123", "組立 2 班", "")],
             ..Default::default()
         };
         let saved = dir.save(d.path(), &admin(), now()).unwrap();
@@ -165,10 +281,10 @@ mod tests {
         let a = Directory::load(d.path()).unwrap();
         let b = a.clone();
         let mut a2 = a.clone();
-        a2.users.push(member("taro", ""));
+        a2.users.push(member("taro", "", ""));
         a2.save(d.path(), &admin(), now()).unwrap();
         let mut b2 = b;
-        b2.users.push(member("jiro", ""));
+        b2.users.push(member("jiro", "", ""));
         let err = b2.save(d.path(), &admin(), now()).unwrap_err();
         assert!(
             matches!(
@@ -188,12 +304,12 @@ mod tests {
     fn duplicates_and_bad_ids_are_rejected() {
         let d = tempfile::tempdir().unwrap();
         let dup = Directory {
-            users: vec![member("taro", ""), member("TARO", "")],
+            users: vec![member("taro", "", ""), member("TARO", "", "")],
             ..Default::default()
         };
         assert!(dup.save(d.path(), &admin(), now()).is_err());
         let bad = Directory {
-            devices: vec![member("a\\b", "")],
+            devices: vec![member("a\\b", "", "")],
             ..Default::default()
         };
         assert!(bad.save(d.path(), &admin(), now()).is_err());
@@ -206,8 +322,8 @@ mod tests {
     #[test]
     fn name_of_finds_registered_names_only() {
         let dir = Directory {
-            users: vec![member("taro", "山田 太郎"), member("jiro", "")],
-            devices: vec![member("pc-0123", "組立 2 班")],
+            users: vec![member("taro", "山田 太郎", ""), member("jiro", "", "")],
+            devices: vec![member("pc-0123", "組立 2 班", "")],
             ..Default::default()
         };
         assert_eq!(dir.name_of(Kind::User, "taro"), Some("山田 太郎"));
@@ -231,5 +347,109 @@ mod tests {
             Directory::load(d.path()),
             Err(Error::Broken { .. })
         ));
+    }
+
+    // -------------------------------------------------------- CSV 取り込み
+
+    #[test]
+    fn decode_utf8_bom_is_stripped() {
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice("taro,山田太郎,メモ".as_bytes());
+        assert_eq!(decode_csv_bytes(&bytes), "taro,山田太郎,メモ");
+    }
+
+    #[test]
+    fn decode_utf8_without_bom() {
+        let bytes = "taro,山田太郎,メモ".as_bytes();
+        assert_eq!(decode_csv_bytes(bytes), "taro,山田太郎,メモ");
+    }
+
+    #[test]
+    fn decode_shift_jis_is_recognized() {
+        let (cow, _, had_errors) = encoding_rs::SHIFT_JIS.encode("taro,山田太郎,メモ");
+        assert!(!had_errors);
+        assert_eq!(decode_csv_bytes(&cow), "taro,山田太郎,メモ");
+    }
+
+    #[test]
+    fn header_row_is_skipped() {
+        let csv = "ログオン名,名前,メモ\ntaro,山田太郎,組立";
+        let r = import_members_csv(csv.as_bytes());
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        assert_eq!(r.members, vec![member("taro", "山田太郎", "組立")]);
+    }
+
+    #[test]
+    fn non_header_first_row_is_treated_as_data() {
+        let csv = "taro,山田太郎,組立\njiro,鈴木次郎,";
+        let r = import_members_csv(csv.as_bytes());
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        assert_eq!(
+            r.members,
+            vec![
+                member("taro", "山田太郎", "組立"),
+                member("jiro", "鈴木次郎", ""),
+            ]
+        );
+    }
+
+    #[test]
+    fn note_column_is_optional() {
+        let csv = "ログオン名,名前,メモ\ntaro,山田太郎";
+        let r = import_members_csv(csv.as_bytes());
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        assert_eq!(r.members, vec![member("taro", "山田太郎", "")]);
+    }
+
+    #[test]
+    fn blank_lines_are_silently_skipped() {
+        let csv = "ログオン名,名前,メモ\ntaro,山田太郎,\n\njiro,鈴木次郎,";
+        let r = import_members_csv(csv.as_bytes());
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        assert_eq!(r.members.len(), 2);
+    }
+
+    #[test]
+    fn invalid_id_row_is_skipped_and_reported_with_line_number() {
+        let csv = "ログオン名,名前,メモ\ntaro,山田太郎,\na/b,不正,\njiro,鈴木次郎,";
+        let r = import_members_csv(csv.as_bytes());
+        assert_eq!(
+            r.members,
+            vec![
+                member("taro", "山田太郎", ""),
+                member("jiro", "鈴木次郎", ""),
+            ]
+        );
+        assert_eq!(r.errors.len(), 1);
+        assert_eq!(r.errors[0].line, 3, "見出し行を含む物理行番号");
+    }
+
+    #[test]
+    fn all_rows_invalid_leaves_members_empty() {
+        let csv = "ログオン名,名前,メモ\na/b,不正1,\nc:d,不正2,";
+        let r = import_members_csv(csv.as_bytes());
+        assert!(r.members.is_empty());
+        assert_eq!(r.errors.len(), 2);
+    }
+
+    #[test]
+    fn merge_adds_new_and_overwrites_existing() {
+        let mut list = vec![member("taro", "旧名", "旧メモ")];
+        let imported = vec![member("taro", "新名", "新メモ"), member("jiro", "次郎", "")];
+        let (added, updated) = merge_members(&mut list, &imported);
+        assert_eq!((added, updated), (1, 1));
+        assert_eq!(list.len(), 2);
+        assert_eq!(
+            list.iter().find(|m| m.id == "taro").unwrap(),
+            &member("taro", "新名", "新メモ")
+        );
+    }
+
+    #[test]
+    fn merge_duplicate_id_within_import_last_one_wins() {
+        let mut list = Vec::new();
+        let imported = vec![member("taro", "1回目", ""), member("taro", "2回目", "")];
+        merge_members(&mut list, &imported);
+        assert_eq!(list, vec![member("taro", "2回目", "")]);
     }
 }

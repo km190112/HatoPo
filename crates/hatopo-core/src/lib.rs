@@ -16,7 +16,9 @@ mod settings;
 mod status;
 mod when;
 
-pub use directory::{DIRECTORY_FILE, Directory, Member};
+pub use directory::{
+    DIRECTORY_FILE, Directory, ImportError, ImportResult, Member, import_members_csv, merge_members,
+};
 pub use error::Error;
 pub use loft::{Broken, Filter, Inbox, Loft};
 pub use model::{

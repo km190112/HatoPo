@@ -9,8 +9,9 @@ use chrono::{Local, NaiveDateTime};
 use eframe::egui::{self, Color32, RichText};
 use egui_extras::{Column, TableBuilder};
 use hatopo_core::{
-    Archived, CloseReason, Directory, Error, Kind, Loft, MASCOT_SCALES, MAX_POLL_SECONDS,
-    MAX_REMIND_MINUTES, MIN_POLL_SECONDS, Member, Notice, Origin, Settings, Target,
+    Archived, CloseReason, Directory, Error, ImportResult, Kind, Loft, MASCOT_SCALES,
+    MAX_POLL_SECONDS, MAX_REMIND_MINUTES, MIN_POLL_SECONDS, Member, Notice, Origin, Settings,
+    Target, import_members_csv, merge_members,
 };
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -48,6 +49,12 @@ struct MemberEdit {
     confirm_delete: bool,
 }
 
+/// 直前に CSV から取り込んだ結果 (エラー行を見せている間だけ保持する)。
+struct MemberImport {
+    kind: Kind,
+    result: ImportResult,
+}
+
 pub struct AdminApp {
     loft: Loft,
     loft_input: String,
@@ -80,6 +87,7 @@ pub struct AdminApp {
 
     m_edit: Option<MemberEdit>,
     m_search: String,
+    m_import: Option<MemberImport>,
 
     s_edit: Settings,
 }
@@ -169,6 +177,7 @@ impl AdminApp {
             a_keyword: String::new(),
             m_edit: None,
             m_search: String::new(),
+            m_import: None,
             s_edit: Settings::default(),
         };
         app.reload();
@@ -248,6 +257,7 @@ impl AdminApp {
         let _ = std::fs::write(&f, path.display().to_string());
         self.close_editor();
         self.m_edit = None;
+        self.m_import = None;
         self.reload();
         match &self.data.error {
             None => self.ok(format!("{} を開きました。", path.display())),
@@ -1166,6 +1176,27 @@ impl AdminApp {
                     .desired_width(180.0),
             );
         });
+        ui.horizontal_wrapped(|ui| {
+            if ui.button(format!("CSV から{title}を取り込む…")).clicked() {
+                self.import_members_from_csv(kind, id_label);
+            }
+            ui.label(
+                RichText::new(format!(
+                    "{id_label},名前,メモ の順に入れた CSV (UTF-8 または Shift-JIS) を選びます。\
+1 行目が見出しなら自動で読み飛ばします。既に名簿にある{id_label}は上書きされます。"
+                ))
+                .small()
+                .color(MUTED),
+            );
+        });
+        if let Some(errors) = self
+            .m_import
+            .as_ref()
+            .filter(|i| i.kind == kind)
+            .map(|i| i.result.errors.clone())
+        {
+            self.show_import_errors(ui, &errors);
+        }
         if unregistered > 0 {
             ui.colored_label(
                 WARN,
@@ -1404,6 +1435,100 @@ impl AdminApp {
                 "{e}\nほかの管理者が名簿を変えています。［再読込］してからやり直してください。"
             )),
             Err(e) => self.fail(e.to_string()),
+        }
+    }
+
+    fn import_members_from_csv(&mut self, kind: Kind, id_label: &str) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title(format!("{id_label}・名前・メモの順の CSV を選ぶ"))
+            .add_filter("CSV", &["csv"])
+            .pick_file()
+        else {
+            return;
+        };
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.fail(format!("CSV ({}) が読めません: {e}", path.display()));
+                return;
+            }
+        };
+        let result = import_members_csv(&bytes);
+
+        let mut dir: Directory = self.data.directory.clone();
+        let list = if kind == Kind::Device {
+            &mut dir.devices
+        } else {
+            &mut dir.users
+        };
+        let (added, updated) = merge_members(list, &result.members);
+
+        if added == 0 && updated == 0 {
+            if result.errors.is_empty() {
+                self.fail("CSV から取り込める行がありませんでした。");
+            } else {
+                self.fail(format!(
+                    "CSV の {} 件の行すべてで取り込みに失敗しました。下の一覧を確認してください。",
+                    result.errors.len()
+                ));
+                self.m_import = Some(MemberImport { kind, result });
+            }
+            return;
+        }
+
+        match dir.save(self.loft.root(), &self.me, now()) {
+            Ok(saved) => {
+                self.data.directory = saved;
+                let title = if kind == Kind::User {
+                    "ユーザー"
+                } else {
+                    "端末"
+                };
+                let mut msg = format!(
+                    "CSV から{title}を取り込みました (新規 {added} 件・更新 {updated} 件)。"
+                );
+                if !result.errors.is_empty() {
+                    msg.push_str(&format!(
+                        " {} 件はエラーで取り込めませんでした。下の一覧を確認してください。",
+                        result.errors.len()
+                    ));
+                }
+                self.ok(msg);
+                self.m_import = if result.errors.is_empty() {
+                    None
+                } else {
+                    Some(MemberImport { kind, result })
+                };
+            }
+            Err(e @ Error::Conflict { .. }) => self.fail(format!(
+                "{e}\nほかの管理者が名簿を変えています。［再読込］してからやり直してください。"
+            )),
+            Err(e) => self.fail(e.to_string()),
+        }
+    }
+
+    fn show_import_errors(&mut self, ui: &mut egui::Ui, errors: &[hatopo_core::ImportError]) {
+        if errors.is_empty() {
+            return;
+        }
+        let mut close = false;
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.colored_label(WARN, format!("取り込めなかった行 ({} 件):", errors.len()));
+                if ui.small_button("閉じる").clicked() {
+                    close = true;
+                }
+            });
+            egui::ScrollArea::vertical()
+                .max_height(120.0)
+                .show(ui, |ui| {
+                    for e in errors {
+                        ui.label(RichText::new(e.to_string()).small());
+                    }
+                });
+        });
+        if close {
+            self.m_import = None;
         }
     }
 
