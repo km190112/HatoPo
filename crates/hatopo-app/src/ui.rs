@@ -62,7 +62,6 @@ pub struct App {
     poses: HashMap<Pose, TextureHandle>,
     tray_imgs: HashMap<Tray, Rgba>,
     tray: Option<TrayIcon>,
-    autostart_item: Option<CheckMenuItem>,
     /// トレイの「大きさ」の各項目 (チェックを今の大きさに合わせる)
     scale_items: Vec<(u32, CheckMenuItem)>,
     /// 窓に当てた大きさ (%)。変わったら窓の大きさと位置を直す
@@ -119,7 +118,6 @@ impl App {
             poses: HashMap::new(),
             tray_imgs: HashMap::new(),
             tray: None,
-            autostart_item: None,
             scale_items: Vec::new(),
             scale_applied: None,
             last_zoom_step: None,
@@ -137,10 +135,8 @@ impl App {
             restart_exe,
         };
         app.load_character(&cc.egui_ctx, &character);
-        let installed = app.restart_exe.is_some();
-        if let Some(t) = build_tray(&cc.egui_ctx, ui_tx, cmd_tx, &app.tray_imgs, installed) {
+        if let Some(t) = build_tray(&cc.egui_ctx, ui_tx, cmd_tx, &app.tray_imgs) {
             app.tray = Some(t.tray);
-            app.autostart_item = Some(t.autostart);
             app.scale_items = t.scales;
             app.char_menu = Some(t.characters);
         }
@@ -193,7 +189,6 @@ impl App {
                     s.local.mascot_hidden = !s.local.mascot_hidden;
                     s.local.save();
                 }
-                UiMsg::ToggleAutostart => self.toggle_autostart(),
                 UiMsg::SetScale(p) => self.set_scale(p),
                 UiMsg::Quit => ctx.send_viewport_cmd(ViewportCommand::Close),
                 UiMsg::Restart => {
@@ -316,35 +311,6 @@ impl App {
             item.set_checked(*p == pct);
         }
         self.scale_applied = Some(pct);
-    }
-
-    /// チェックの状態に合わせてタスクスケジューラへ登録・解除する。失敗したらチェックを戻す。
-    fn toggle_autostart(&mut self) {
-        let (Some(item), Some(exe)) = (&self.autostart_item, &self.restart_exe) else {
-            return;
-        };
-        let want = item.is_checked();
-        let result = if want {
-            crate::boot::register_autostart(exe)
-        } else {
-            crate::boot::unregister_autostart()
-        };
-        let msg = match &result {
-            Ok(()) if want => {
-                "ログオン時に HatoPo を自動で起動するように登録しました。".to_string()
-            }
-            Ok(()) => "自動起動の登録を解除しました。
-次回のログオンからは起動しません (今の HatoPo は動き続けます)。
-もう一度起動したいときは、トレイのメニューでチェックを付け直してください。"
-                .to_string(),
-            Err(e) => {
-                item.set_checked(!want);
-                e.clone()
-            }
-        };
-        // メッセージボックスは閉じるまで戻らないので、画面を止めないよう別スレッドで出す
-        let is_err = result.is_err();
-        std::thread::spawn(move || crate::win::message_box(&msg, is_err));
     }
 
     fn update_tray(&mut self, state: Tray, count: usize, tip: String) {
@@ -1235,10 +1201,9 @@ pub fn window_icon() -> egui::IconData {
     }
 }
 
-/// トレイ本体と、あとで中身を変える項目 (自動起動・大きさ・キャラクター)
+/// トレイ本体と、あとで中身を変える項目 (大きさ・キャラクター)
 struct TrayParts {
     tray: TrayIcon,
-    autostart: CheckMenuItem,
     scales: Vec<(u32, CheckMenuItem)>,
     characters: Submenu,
 }
@@ -1248,7 +1213,6 @@ fn build_tray(
     ui_tx: Sender<UiMsg>,
     cmd_tx: Sender<Cmd>,
     imgs: &HashMap<Tray, Rgba>,
-    installed: bool,
 ) -> Option<TrayParts> {
     let menu = Menu::new();
     let items = [
@@ -1279,24 +1243,19 @@ fn build_tray(
     let char_menu = Submenu::new("キャラクター", true);
     let _ = menu.append(&char_menu);
     let _ = menu.append(&PredefinedMenuItem::separator());
-    // 導入していない (--loft で起動した) ときは登録先の exe が無いので押せなくする
-    let autostart = if installed {
-        CheckMenuItem::with_id(
-            "autostart",
-            "ログオン時に自動で起動する",
-            true,
-            crate::boot::is_autostart_registered(),
-            None,
-        )
-    } else {
-        CheckMenuItem::with_id(
-            "autostart",
-            "ログオン時に自動で起動する (導入後に使えます)",
-            false,
-            false,
-            None,
-        )
-    };
+    // 登録状態を表示するだけ (クリック不可)。登録は鳩の巣の bat、解除は --uninstall で行う
+    let registered = crate::boot::is_autostart_registered();
+    let autostart = CheckMenuItem::with_id(
+        "autostart",
+        if registered {
+            "ログオン時に自動で起動する (登録ずみ)"
+        } else {
+            "ログオン時に自動で起動する (未登録。鳩の巣の「自動起動を登録.bat」で登録できます)"
+        },
+        false,
+        registered,
+        None,
+    );
     let _ = menu.append(&autostart);
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&MenuItem::with_id("quit", "HatoPo を終了", true, None));
@@ -1308,7 +1267,6 @@ fn build_tray(
             "mascot" => Some(UiMsg::ToggleMascot),
             "about" => Some(UiMsg::OpenAbout),
             "char-default" => Some(UiMsg::SetCharacter(None)),
-            "autostart" => Some(UiMsg::ToggleAutostart),
             "quit" => Some(UiMsg::Quit),
             "refresh" => {
                 let _ = cmd_tx.send(Cmd::Refresh);
@@ -1352,7 +1310,6 @@ fn build_tray(
         .ok()
         .map(|tray| TrayParts {
             tray,
-            autostart,
             scales,
             characters: char_menu,
         })

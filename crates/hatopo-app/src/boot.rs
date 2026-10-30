@@ -1,8 +1,12 @@
-//! 起動の段取り: 導入 (共有から初回起動) / 自己更新 / 自動起動の登録。
+//! 起動の段取り: 導入 (共有から初回起動) / 自己更新。
 //!
 //! - 共有の `HatoPo.exe` は直接常駐させない。実行中の exe は差し替えられず、共有が切れると常駐ごと落ちる
-//! - 初回は共有の exe をダブルクリック → `%LOCALAPPDATA%\HatoPo\` へ自分をコピー → 自動起動を登録 → そちらを起動
+//! - 初回は共有の exe をダブルクリック → `%LOCALAPPDATA%\HatoPo\` へ自分をコピー → そちらを起動
 //! - 以後はローカルの exe が動き、共有の exe が変わったら自分を入れ替えて起動し直す
+//! - 自動起動 (ログオン時に起動) の**登録**は exe からは行わない。exe 自身が `schtasks /create` を
+//!   呼んで永続化 (persistence) を仕込む挙動は Microsoft Defender に誤検知されるため、配布物同梱の
+//!   `loft-template/autostart/自動起動を登録.bat` (`Register-ScheduledTask`) に任せる (2026-10-30)。
+//!   **解除** (`schtasks /delete`) は persistence を作らない操作なので `--uninstall` 用に exe 側に残す
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -87,7 +91,8 @@ pub fn cleanup_old() {
     let _ = fs::remove_file(local_dir().join("HatoPo.old.exe"));
 }
 
-/// 共有の exe をローカルへ入れ、鳩の巣の場所を覚え、自動起動を登録する。戻り値はローカルの exe。
+/// 共有の exe をローカルへ入れ、鳩の巣の場所を覚える。戻り値はローカルの exe。
+/// 自動起動の登録はここでは行わない (同梱の bat に任せる)。
 pub fn install(loft: &Path, running_exe: &Path) -> Result<PathBuf, String> {
     let dir = local_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("{} を作れません: {e}", dir.display()))?;
@@ -98,7 +103,6 @@ pub fn install(loft: &Path, running_exe: &Path) -> Result<PathBuf, String> {
     if let Some(s) = stamp(running_exe) {
         let _ = fs::write(stamp_file(), s);
     }
-    register_autostart(&dest)?;
     Ok(dest)
 }
 
@@ -128,27 +132,15 @@ pub fn spawn(exe: &Path, wait_pid: Option<u32>) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
-// 自動起動 (タスクスケジューラ)
+// 自動起動 (タスクスケジューラ) — ここに残るのは「読む」と「消す」だけ
 //
-// `schtasks /sc onlogon` は管理者権限が要るので使わない。XML でトリガーの UserId を
-// 自分に限定し、LogonType=InteractiveToken にすると昇格せずに登録できる。
-// 既定値の地雷 (ExecutionTimeLimit=PT72H で 3 日後に止まる、電池駆動で止まる) も XML で潰す。
+// 登録 (`schtasks /create`。persistence を新規に作る操作) は配布 zip 同梱の
+// loft-template/autostart/自動起動を登録.bat (Register-ScheduledTask) が行う。
+// exe 自身が schtasks /create を呼ぶと Microsoft Defender の誤検知を招くため、2026-10 に
+// exe からこの機能を外した。current_account / task_full_name はタスク名を bat 側と揃えるため、
+// is_autostart_registered はトレイの読み取り専用表示のため、unregister_autostart は
+// `schtasks /delete` (persistence を作らない) なので `--uninstall` 用に、それぞれ残す。
 // ---------------------------------------------------------------------------
-
-fn xml_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            _ => out.push(c),
-        }
-    }
-    out
-}
 
 /// `DOMAIN\USER` (ドメイン非参加なら `PC名\USER`)。
 pub fn current_account() -> Option<(String, String)> {
@@ -180,78 +172,6 @@ pub fn task_full_name(user: &str) -> String {
     }
 }
 
-/// 登録用の XML。`<Command>` は引用符で囲まない (囲むと引用符ごとファイル名になる)。
-/// エスケープはパス操作を全部終えてから最後に 1 回だけ掛ける。
-pub fn task_xml(exe: &Path, account: &str) -> String {
-    let dir = exe
-        .parent()
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
-    let exe = xml_escape(&exe.display().to_string());
-    let dir = xml_escape(&dir);
-    let account = xml_escape(account);
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo>
-    <Description>HatoPo (デスクトップ常駐の通知) をログオン時に起動する</Description>
-  </RegistrationInfo>
-  <Triggers>
-    <LogonTrigger>
-      <Enabled>true</Enabled>
-      <UserId>{account}</UserId>
-    </LogonTrigger>
-  </Triggers>
-  <Principals>
-    <Principal id="Author">
-      <UserId>{account}</UserId>
-      <LogonType>InteractiveToken</LogonType>
-      <RunLevel>LeastPrivilege</RunLevel>
-    </Principal>
-  </Principals>
-  <Settings>
-    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
-    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
-    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <AllowHardTerminate>true</AllowHardTerminate>
-    <StartWhenAvailable>true</StartWhenAvailable>
-    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
-    <IdleSettings>
-      <StopOnIdleEnd>false</StopOnIdleEnd>
-      <RestartOnIdle>false</RestartOnIdle>
-    </IdleSettings>
-    <AllowStartOnDemand>true</AllowStartOnDemand>
-    <Enabled>true</Enabled>
-    <Hidden>false</Hidden>
-    <RunOnlyIfIdle>false</RunOnlyIfIdle>
-    <WakeToRun>false</WakeToRun>
-    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
-    <Priority>7</Priority>
-    <RestartOnFailure>
-      <Interval>PT1M</Interval>
-      <Count>3</Count>
-    </RestartOnFailure>
-  </Settings>
-  <Actions Context="Author">
-    <Exec>
-      <Command>{exe}</Command>
-      <WorkingDirectory>{dir}</WorkingDirectory>
-    </Exec>
-  </Actions>
-</Task>
-"#
-    )
-}
-
-/// schtasks は BOM で文字コードを判定する。UTF-8 で書くと日本語のユーザー名やパスが化ける。
-fn utf16le_bom(s: &str) -> Vec<u8> {
-    let mut out = vec![0xFF, 0xFE];
-    for u in s.encode_utf16() {
-        out.extend_from_slice(&u.to_le_bytes());
-    }
-    out
-}
-
 fn schtasks(args: &[&str]) -> Result<std::process::Output, String> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -260,25 +180,6 @@ fn schtasks(args: &[&str]) -> Result<std::process::Output, String> {
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|e| format!("schtasks を起動できません: {e}"))
-}
-
-pub fn register_autostart(exe: &Path) -> Result<(), String> {
-    let (account, user) = current_account().ok_or("ログオンユーザー名が取れません")?;
-    let full = task_full_name(&user);
-    let xml_path = local_dir().join("autostart-task.xml");
-    fs::write(&xml_path, utf16le_bom(&task_xml(exe, &account)))
-        .map_err(|e| format!("自動起動の設定を書けません: {e}"))?;
-    let xml_arg = xml_path.display().to_string();
-    let out = schtasks(&["/create", "/xml", &xml_arg, "/tn", &full, "/f"])?;
-    if out.status.success() {
-        let _ = fs::remove_file(&xml_path);
-        Ok(())
-    } else {
-        // 失敗したら XML は残す (案内したコマンドをそのまま実行できるように)
-        Err(format!(
-            "自動起動を登録できませんでした。次のコマンドを実行してください:\nschtasks /create /xml \"{xml_arg}\" /tn \"{full}\" /f"
-        ))
-    }
 }
 
 /// 自分の自動起動 (`<ログオン名>\HatoPo`) が登録されているか。
@@ -306,28 +207,30 @@ pub fn unregister_autostart() -> Result<(), String> {
     }
 }
 
+/// `%LOCALAPPDATA%\HatoPo` を数秒後に削除する。実行中の exe は自分自身のファイルを
+/// 削除できないため、自分が終了してロックが外れるのを別プロセスで待たせる
+/// (Windows の自己アンインストールの定番手法)。失敗しても `--uninstall` 自体は続行させたいので
+/// 戻り値は無く、プロセスの起動に失敗しても黙って諦める。
+pub fn schedule_delete_local_dir() {
+    schedule_delete_dir(&local_dir());
+}
+
+fn schedule_delete_dir(dir: &Path) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let cmd = format!(
+        "ping 127.0.0.1 -n 3 >nul & rmdir /s /q \"{}\"",
+        dir.display()
+    );
+    let _ = Command::new("cmd")
+        .raw_arg(format!("/C {cmd}"))
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn task_xml_escapes_once_and_does_not_quote_command() {
-        let exe = Path::new(r"C:\Users\R&D 太郎\AppData\Local\HatoPo\HatoPo.exe");
-        let xml = task_xml(exe, r"CORP\r&d");
-        assert!(
-            xml.contains(
-                r"<Command>C:\Users\R&amp;D 太郎\AppData\Local\HatoPo\HatoPo.exe</Command>"
-            )
-        );
-        assert!(xml.contains(
-            r"<WorkingDirectory>C:\Users\R&amp;D 太郎\AppData\Local\HatoPo</WorkingDirectory>"
-        ));
-        assert!(xml.contains(r"<UserId>CORP\r&amp;d</UserId>"));
-        assert!(!xml.contains("&amp;amp;"));
-        assert!(xml.contains("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>"));
-        assert!(xml.contains("<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>"));
-        assert!(xml.contains("<LogonType>InteractiveToken</LogonType>"));
-    }
 
     #[test]
     fn task_lives_under_user_folder() {
@@ -335,12 +238,6 @@ mod tests {
         assert_eq!(task_full_name("山田"), r"山田\HatoPo");
         assert_eq!(task_full_name(r"a\b"), r"ab\HatoPo");
         assert_eq!(task_full_name(""), "HatoPo");
-    }
-
-    #[test]
-    fn xml_is_written_as_utf16le_with_bom() {
-        let b = utf16le_bom("あ");
-        assert_eq!(b, [0xFF, 0xFE, 0x42, 0x30]);
     }
 
     #[test]
@@ -353,6 +250,20 @@ mod tests {
         replace_exe(&src, &dest).unwrap();
         assert_eq!(fs::read(&dest).unwrap(), b"v2");
         assert!(!d.path().join("HatoPo.new.exe").exists());
+    }
+
+    #[test]
+    fn schedule_delete_dir_removes_the_folder_after_a_short_delay() {
+        let d = tempfile::tempdir().unwrap();
+        let target = d.path().join("日本語フォルダ").join("HatoPo");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("dummy.txt"), b"x").unwrap();
+        schedule_delete_dir(&target);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while target.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        assert!(!target.exists(), "数秒待っても削除されなかった");
     }
 
     #[test]

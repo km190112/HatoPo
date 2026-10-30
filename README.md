@@ -91,7 +91,11 @@ powershell -NoProfile -Command "Get-ChildItem -LiteralPath '\\server\HatoLoft' -
 ```bat
 cd /d \\server\HatoLoft
 for %f in (HatoPo.exe HatoPoAdmin.exe hatopo.dll hatopo-cli.exe settings.json directory.json) do icacls %f /inheritance:r /grant:r "管理者のグループ:F" "利用者のグループ:RX"
+icacls autostart /inheritance:r /grant:r "管理者のグループ:(OI)(CI)F" "利用者のグループ:(OI)(CI)RX" /T
 ```
+
+`autostart\` フォルダ (自動起動を登録するスクリプト) も、改ざんされるとログオン時に任意のプログラムを
+実行させられてしまうので、他のファイルと同じく管理者のみ書き込み可にする。
 
 確かめ方: 利用者のアカウントで `HatoPo.exe` を別名で上書きしようとして「アクセスが拒否されました」になること。
 
@@ -100,7 +104,8 @@ for %f in (HatoPo.exe HatoPoAdmin.exe hatopo.dll hatopo-cli.exe settings.json di
 1. 共有フォルダの `HatoPo.exe` をダブルクリックする
 2. 「HatoPo を導入しました」と出たら OK を押す
 
-これで自分の PC (`%LOCALAPPDATA%\HatoPo\`) にコピーされ、次回からはログオン時に自動で起動します
+これで自分の PC (`%LOCALAPPDATA%\HatoPo\`) にコピーされます。
+ログオン時に自動で起動させたいときは、共有フォルダの `HatoLoft\autostart\自動起動を登録.bat` を実行してください
 (タスクスケジューラに自分専用で登録します。管理者権限は要りません)。
 
 - **更新は自動です。** 管理者が共有の `HatoPo.exe` を新しくすると、各 PC は次の確認で入れ替えて起動し直します
@@ -113,8 +118,10 @@ for %f in (HatoPo.exe HatoPoAdmin.exe hatopo.dll hatopo-cli.exe settings.json di
 - キャラクターは各自で選べます: タスクトレイの鳩を右クリック →「キャラクター」(マスコットの右クリックでも可)。選んだものはその PC に覚えられ、次に起動したときも同じです。「管理者の設定に合わせる」で、管理者が決めた既定に戻ります
 - モニターをつなぎ替えた (ケーブルの抜き挿し・ドッキングステーション・解像度や拡大率の変更) あとは、マスコットはメイン画面の右下に戻ります。画面から見えない位置に残ったときも戻ります
 - 著作権とライセンスは、一覧の［HatoPo について］かトレイの「HatoPo について」で見られます (GitHub へのリンク付き)
-- 自動起動をやめるとき: タスクトレイの鳩を右クリック →「ログオン時に自動で起動する」のチェックを外す (付け直せば再登録)
-- すっかりやめるとき: `%LOCALAPPDATA%\HatoPo\HatoPo.exe --uninstall` で自動起動とトーストの登録を外し、フォルダを消す
+- タスクトレイの「ログオン時に自動で起動する」は今の登録状態を表示するだけです (クリックでは切り替えられません)
+- 自動起動をやめるとき・すっかりやめるとき: `%LOCALAPPDATA%\HatoPo\HatoPo.exe --uninstall` を実行する。
+  自動起動とトースト通知の登録を解除し、`%LOCALAPPDATA%\HatoPo\` フォルダも削除します
+  (もう一度使いたくなったら、共有フォルダの `HatoPo.exe` をダブルクリックして導入し直してください)
 
 ## 管理画面 (HatoPoAdmin.exe)
 
