@@ -6,7 +6,7 @@ HatoPo 自身のライセンスは [LICENSE](LICENSE) を見てください。
 
 `python scripts/third_party_notices.py` で作り直せます。
 
-161 件
+165 件
 
 | ライブラリ | 版 | ライセンス | 場所 |
 |---|---|---|---|
@@ -35,6 +35,8 @@ HatoPo 自身のライセンスは [LICENSE](LICENSE) を見てください。
 | crc32fast | 1.5.3 | MIT OR Apache-2.0 | https://github.com/srijs/rust-crc32fast |
 | crossbeam-channel | 0.5.17 | MIT OR Apache-2.0 | https://github.com/crossbeam-rs/crossbeam |
 | crossbeam-utils | 0.8.23 | MIT OR Apache-2.0 | https://github.com/crossbeam-rs/crossbeam |
+| csv | 1.4.0 | Unlicense/MIT | https://github.com/BurntSushi/rust-csv |
+| csv-core | 0.1.13 | Unlicense/MIT | https://github.com/BurntSushi/rust-csv |
 | cursor-icon | 1.2.0 | MIT OR Apache-2.0 OR Zlib | https://github.com/rust-windowing/cursor-icon |
 | displaydoc | 0.2.7 | MIT OR Apache-2.0 | https://github.com/yaahc/displaydoc |
 | document-features | 0.2.12 | MIT OR Apache-2.0 | https://github.com/slint-ui/document-features |
@@ -46,6 +48,7 @@ HatoPo 自身のライセンスは [LICENSE](LICENSE) を見てください。
 | egui_extras | 0.32.3 | MIT OR Apache-2.0 | https://github.com/emilk/egui |
 | egui_glow | 0.32.3 | MIT OR Apache-2.0 | https://github.com/emilk/egui/tree/main/crates/egui_glow |
 | emath | 0.32.3 | MIT OR Apache-2.0 | https://github.com/emilk/egui/tree/main/crates/emath |
+| encoding_rs | 0.8.35 | (Apache-2.0 OR MIT) AND BSD-3-Clause | https://github.com/hsivonen/encoding_rs |
 | enum-map | 2.7.3 | MIT OR Apache-2.0 | https://codeberg.org/xfix/enum-map |
 | enum-map-derive | 0.17.0 | MIT OR Apache-2.0 | https://codeberg.org/xfix/enum-map |
 | epaint | 0.32.3 | MIT OR Apache-2.0 | https://github.com/emilk/egui/tree/main/crates/epaint |
@@ -106,6 +109,7 @@ HatoPo 自身のライセンスは [LICENSE](LICENSE) を見てください。
 | quote | 1.0.47 | MIT OR Apache-2.0 | https://github.com/dtolnay/quote |
 | raw-window-handle | 0.6.2 | MIT OR Apache-2.0 OR Zlib | https://github.com/rust-windowing/raw-window-handle |
 | rfd | 0.17.2 | MIT | https://github.com/PolyMeilex/rfd |
+| ryu | 1.0.23 | Apache-2.0 OR BSL-1.0 | https://github.com/dtolnay/ryu |
 | scopeguard | 1.2.0 | MIT OR Apache-2.0 | https://github.com/bluss/scopeguard |
 | serde | 1.0.229 | MIT OR Apache-2.0 | https://github.com/serde-rs/serde |
 | serde_core | 1.0.229 | MIT OR Apache-2.0 | https://github.com/serde-rs/serde |
