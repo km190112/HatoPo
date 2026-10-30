@@ -7,6 +7,7 @@
 #   HatoLoft\          … 共有フォルダへそのまま置く「鳩の巣」一式
 #     HatoPo.exe / HatoPoAdmin.exe / hatopo.dll / hatopo-cli.exe / settings.json
 #     character_icon\HatoPoBlue\ (poses, tray-icon)
+#     autostart\         … 自動起動の登録 (自動起動を登録.bat / register-autostart.ps1)
 #     broadcast\ PigeonHole\user\ PigeonHole\device\ archive\ status\ read\
 #   vba\HatoPo.bas     … Excel にインポートするモジュール
 #   はじめにお読みください.txt / キャラクター画像の作り方.md / THIRD-PARTY-NOTICES.md
@@ -38,6 +39,7 @@ foreach ($f in $programs) {
 }
 Copy-Item -LiteralPath (Join-Path $root 'loft-template\settings.json') -Destination $loft
 Copy-Item -LiteralPath (Join-Path $root 'loft-template\character_icon') -Destination $loft -Recurse
+Copy-Item -LiteralPath (Join-Path $root 'loft-template\autostart') -Destination $loft -Recurse
 
 # zip は空のフォルダを入れないので、置き場所が分かるように説明を 1 枚ずつ置く
 $dirs = @{

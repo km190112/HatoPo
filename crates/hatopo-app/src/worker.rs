@@ -23,8 +23,6 @@ pub enum Cmd {
 pub enum UiMsg {
     OpenList,
     ToggleMascot,
-    /// トレイの「ログオン時に自動で起動する」が押された (チェックは既に切り替わっている)
-    ToggleAutostart,
     /// マスコットの大きさ (%) を選んだ
     SetScale(u32),
     /// キャラクターを選んだ (None は管理者の設定に合わせる)

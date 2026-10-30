@@ -1,11 +1,13 @@
 //! HatoPo.exe — いつでも、あなたのデスクトップに。小さな伝書鳩。
 //!
 //! 起動のしかたは 3 通り:
-//! - 共有 (鳩の巣) の `HatoPo.exe` をダブルクリック → ローカルへ導入して自動起動を登録し、そちらを起動
-//! - ローカルの `%LOCALAPPDATA%\HatoPo\HatoPo.exe` (ログオン時の自動起動) → 常駐
+//! - 共有 (鳩の巣) の `HatoPo.exe` をダブルクリック → ローカルへ導入して、そちらを起動
+//!   (自動起動を登録したい場合は、導入後に鳩の巣の `autostart\自動起動を登録.bat` を実行する)
+//! - ローカルの `%LOCALAPPDATA%\HatoPo\HatoPo.exe` (ログオン時の自動起動。bat で登録した場合) → 常駐
 //! - `HatoPo.exe --loft <鳩の巣>` → 導入も自己更新もせずにその場で常駐 (試験・開発用)
 //!
-//! `--uninstall` で自動起動とトーストの登録を外す。`--show-list` は起動と同時に一覧を開く。
+//! `--uninstall` で自動起動とトーストの登録を外し、`%LOCALAPPDATA%\HatoPo\` を削除する。
+//! `--show-list` は起動と同時に一覧を開く。
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -58,9 +60,13 @@ fn main() {
         let r = boot::unregister_autostart();
         win::unregister_aumid(worker::AUMID);
         match r {
-            Ok(()) => win::message_box("HatoPo の自動起動を解除しました。", false),
+            Ok(()) => win::message_box(
+                "HatoPo の自動起動とトースト通知の登録を解除しました。\n数秒後に %LOCALAPPDATA%\\HatoPo\\ フォルダを削除します。",
+                false,
+            ),
             Err(e) => win::message_box(&e, true),
         }
+        boot::schedule_delete_local_dir();
         return;
     }
 
@@ -93,7 +99,7 @@ fn main() {
         match boot::install(dir, &exe) {
             Ok(dest) => {
                 win::message_box(
-                    "HatoPo を導入しました。\n次回からはログオンすると自動で起動します。",
+                    "HatoPo を導入しました。\nログオン時に自動で起動させたい場合は、共有フォルダの「自動起動を登録.bat」を一度実行してください。",
                     false,
                 );
                 if let Err(e) = boot::spawn(&dest, Some(std::process::id())) {
