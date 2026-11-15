@@ -148,6 +148,9 @@ pub struct Notice {
     /// 複数の宛先へまとめて送ったときの組の ID。同じ組の完了状況をまとめて見るのに使う
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// 利用者の HatoPo に［完了］ボタンを出すか。`None` (古い通知) は宛先の種類で決める。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub complete_button: Option<bool>,
 }
 
 impl Notice {
@@ -159,9 +162,16 @@ impl Notice {
         self.end_at.is_some_and(|e| e < now)
     }
 
-    /// 利用者が完了を押せるか。一斉送信は管理者が消すまで残す。
+    /// 利用者が完了を押せるか。指定が無ければ、一斉送信は管理者が消すまで残し、個別は完了できる。
     pub fn can_complete(&self) -> bool {
-        self.target.kind != Kind::Broadcast
+        self.complete_button
+            .unwrap_or(self.target.kind != Kind::Broadcast)
+    }
+
+    /// 完了が「通知を閉じる」ことか。一斉送信は共有の 1 件なので、押した本人の分だけ済みにする
+    /// (閉じるのは管理者)。
+    pub fn completes_per_user(&self) -> bool {
+        self.target.kind == Kind::Broadcast
     }
 }
 
@@ -180,6 +190,9 @@ pub struct NewNotice {
     pub start_at: Option<NaiveDateTime>,
     #[serde(default)]
     pub end_at: Option<NaiveDateTime>,
+    /// ［完了］ボタンを出すか。`None` は宛先の種類の既定 (新規) / 今の設定のまま (変更)。
+    #[serde(default)]
+    pub complete_button: Option<bool>,
 }
 
 /// 変更できる項目。宛先は変えられない (変えるなら削除して作り直す)。
@@ -236,6 +249,9 @@ pub struct ReadMark {
     pub user: String,
     pub host: String,
     pub at: NaiveDateTime,
+    /// 「完了」を押した印か (一斉送信の完了は押した本人の分だけ。通知は閉じない)。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub done: bool,
 }
 
 /// archive に置く形。通知の中身に「いつ誰がなぜ閉じたか」と「閉じたときに読んでいた人」を足したもの。
@@ -252,6 +268,58 @@ pub struct Archived {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn complete_button_defaults_by_kind_and_can_be_overridden() {
+        let mut n = Notice {
+            schema: SCHEMA,
+            id: "x".into(),
+            revision: 1,
+            target: Target::broadcast(),
+            title: "t".into(),
+            body: String::new(),
+            due: None,
+            urls: vec![],
+            created_at: NaiveDate::from_ymd_opt(2026, 11, 1)
+                .unwrap()
+                .and_hms_opt(9, 0, 0)
+                .unwrap(),
+            created_by: Origin {
+                user: "a".into(),
+                host: "b".into(),
+            },
+            start_at: NaiveDate::from_ymd_opt(2026, 11, 1)
+                .unwrap()
+                .and_hms_opt(9, 0, 0)
+                .unwrap(),
+            end_at: None,
+            updated_at: None,
+            updated_by: None,
+            group: None,
+            complete_button: None,
+        };
+        assert!(!n.can_complete(), "古い一斉送信は出さない");
+        n.complete_button = Some(true);
+        assert!(n.can_complete());
+        assert!(n.completes_per_user(), "一斉は押した本人の分だけ");
+        n.target = Target::new(Kind::User, "taro").unwrap();
+        n.complete_button = None;
+        assert!(n.can_complete(), "古い個別は出す");
+        n.complete_button = Some(false);
+        assert!(!n.can_complete());
+        assert!(!n.completes_per_user());
+        // 古い通知ファイル (欄なし) も読める
+        let old = r#"{"schema":1,"id":"x","revision":1,"target":{"kind":"user","name":"taro"},
+          "title":"t","created_at":"2026-11-01T09:00:00","created_by":{"user":"a","host":"b"},
+          "start_at":"2026-11-01T09:00:00"}"#;
+        let n: Notice = serde_json::from_str(old).unwrap();
+        assert_eq!(n.complete_button, None);
+        assert!(
+            !serde_json::to_string(&n)
+                .unwrap()
+                .contains("complete_button")
+        );
+    }
 
     #[test]
     fn names_are_lowercased_and_japanese_is_allowed() {

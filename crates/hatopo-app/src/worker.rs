@@ -228,15 +228,22 @@ impl Worker {
     }
 
     fn complete(&self, id: &str) {
-        let title = {
+        let (title, per_user) = {
             let s = self.shared.lock().unwrap();
-            s.snap
-                .items
-                .iter()
-                .find(|n| n.id == id)
-                .map(|n| n.title.clone())
+            let n = s.snap.items.iter().find(|n| n.id == id);
+            (
+                n.map(|n| n.title.clone()),
+                n.is_some_and(|n| n.completes_per_user()),
+            )
         };
-        let result = self.loft.close(id, CloseReason::Done, &self.me, now());
+        // 一斉送信は共有の 1 件なので閉じず、自分の分だけ完了の印を書く (他の人には残る)
+        let result = if per_user {
+            self.loft.mark_done(id, &self.me, now()).map(|_| ())
+        } else {
+            self.loft
+                .close(id, CloseReason::Done, &self.me, now())
+                .map(|_| ())
+        };
         if result.is_ok() {
             self.touch(Some(title.as_deref().unwrap_or("")));
         }
@@ -269,7 +276,14 @@ impl Worker {
         // 名簿が壊れていても名前が出ないだけなので、前回読めた値を使い続ける
         let directory = Directory::load(self.loft.root()).ok();
         let t = now();
-        let result = self.loft.inbox(&self.me.user, &self.me.host, t);
+        let mut result = self.loft.inbox(&self.me.user, &self.me.host, t);
+        // 自分で完了にした一斉送信は出さない (読めない印は未完了として出し続ける)
+        if let Ok(inbox) = &mut result {
+            inbox.active.retain(|n| {
+                !(n.completes_per_user()
+                    && self.loft.is_done(&n.id, &self.me.user).unwrap_or(false))
+            });
+        }
         let read_ok = {
             let mut s = self.shared.lock().unwrap();
             s.snap.loaded = true;
@@ -433,6 +447,7 @@ mod tests {
             updated_at: None,
             updated_by: None,
             group: None,
+            complete_button: None,
         }
     }
 

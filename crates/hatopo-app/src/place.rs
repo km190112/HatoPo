@@ -63,6 +63,22 @@ pub fn corner_position(work: Rect, size: Vec2) -> Pos2 {
     )
 }
 
+/// 実ピクセルでの定位置。余白は 96dpi の値なので、窓の拡大率 (`k`) を掛ける。
+pub fn corner_position_px(work: Rect, size: Vec2, k: f32) -> Pos2 {
+    Pos2::new(
+        (work.right() - size.x - CORNER_MARGIN.x * k).max(work.left()),
+        (work.bottom() - size.y - CORNER_MARGIN.y * k).max(work.top()),
+    )
+}
+
+/// 窓 (実ピクセル) がどのモニターからも見えないとき、メイン画面の右下へ戻す位置。見えていれば `None`。
+pub fn rescue_px(win: Rect, screens: &[Screen], k: f32) -> Option<Pos2> {
+    if is_reachable(win, screens) {
+        return None;
+    }
+    primary(screens).map(|p| corner_position_px(p.work, win.size(), k))
+}
+
 /// 作業領域に収まる一覧の窓の大きさ。
 pub fn list_size(work: Rect, want: Vec2) -> Vec2 {
     Vec2::new(want.x.min(work.width()), want.y.min(work.height()))
@@ -122,6 +138,42 @@ mod tests {
                 primary: false,
             },
         ]
+    }
+
+    /// 拡大率が違うモニターを並べた構成を、実ピクセルのまま扱う
+    /// (ノート PC 150% の右に 100% の外部モニター。点で割ると窓の見え方が狂う)
+    #[test]
+    fn rescue_works_in_real_pixels_with_mixed_dpi() {
+        let screens = [
+            Screen {
+                rect: rect(0.0, 0.0, 2304.0, 1296.0),
+                work: rect(0.0, 0.0, 2304.0, 1236.0),
+                primary: true,
+            },
+            Screen {
+                rect: rect(2304.0, 0.0, 4224.0, 1080.0),
+                work: rect(2304.0, 0.0, 4224.0, 1032.0),
+                primary: false,
+            },
+        ];
+        // 見えている窓 (外部モニター上) は動かさない
+        assert_eq!(
+            rescue_px(rect(3000.0, 500.0, 3330.0, 815.0), &screens, 1.5),
+            None
+        );
+        // どのモニターにも載っていない (ケーブルを抜いた後の置き去り・拡大率違いで外へ出た)
+        let lost = rect(4300.0, 500.0, 4630.0, 815.0);
+        let pos = rescue_px(lost, &screens, 1.5).expect("戻す");
+        // メイン画面 (150%) の右下。余白も 1.5 倍
+        assert_eq!(pos, Pos2::new(2304.0 - 330.0 - 36.0, 1236.0 - 315.0 - 24.0));
+        // メイン画面が無印でも先頭のモニターへ
+        let no_primary = [Screen {
+            primary: false,
+            ..screens[0]
+        }];
+        assert!(rescue_px(lost, &no_primary, 1.0).is_some());
+        // モニターの情報が取れないときは触らない
+        assert_eq!(rescue_px(lost, &[], 1.0), None);
     }
 
     #[test]

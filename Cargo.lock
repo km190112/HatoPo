@@ -971,12 +971,13 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "hatopo-admin"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "chrono",
  "eframe",
  "egui_extras",
  "hatopo-core",
+ "image",
  "rfd",
  "tempfile",
  "winresource",
@@ -984,7 +985,7 @@ dependencies = [
 
 [[package]]
 name = "hatopo-app"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "chrono",
  "eframe",
@@ -1001,7 +1002,7 @@ dependencies = [
 
 [[package]]
 name = "hatopo-cli"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "chrono",
  "clap",
@@ -1012,7 +1013,7 @@ dependencies = [
 
 [[package]]
 name = "hatopo-core"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "chrono",
  "csv",
@@ -1024,7 +1025,7 @@ dependencies = [
 
 [[package]]
 name = "hatopo-dll"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "chrono",
  "hatopo-core",

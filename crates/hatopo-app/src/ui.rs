@@ -57,6 +57,10 @@ pub struct App {
     about: bool,
     /// 前に見たモニターの構成 (変わったらケーブルの抜き挿しなど)
     monitors: Option<Vec<crate::win::Monitor>>,
+    /// マスコットの窓 (実ピクセルで位置を見て動かすために覚える)
+    mascot_hwnd: Option<isize>,
+    /// 起動後の最初の配置を診断ログに書いたか
+    logged_start: bool,
     /// この時刻になったらマスコットを定位置へ戻す
     relocate_at: Option<Instant>,
     poses: HashMap<Pose, TextureHandle>,
@@ -114,6 +118,8 @@ impl App {
             char_items: Vec::new(),
             about: false,
             monitors: None,
+            mascot_hwnd: None,
+            logged_start: false,
             relocate_at: None,
             poses: HashMap::new(),
             tray_imgs: HashMap::new(),
@@ -278,20 +284,56 @@ impl App {
         if hidden {
             return;
         }
-        let Some(r) = ctx.input(|i| i.viewport().outer_rect) else {
+        // 位置は egui の点ではなく Win32 の実ピクセルで見る。モニターごとに拡大率が違うと、
+        // 点への換算 (今の窓の拡大率で割る) がずれて、窓が画面の外へ出たまま気づけなかった
+        if self.mascot_hwnd.is_none() {
+            self.mascot_hwnd = crate::win::find_window("HatoPo");
+        }
+        let Some(hwnd) = self.mascot_hwnd else {
             return;
         };
-        let screens = to_screens(&mons, ctx.pixels_per_point());
+        let Some(r) = crate::win::window_rect(hwnd) else {
+            self.mascot_hwnd = None; // 窓が作り直された。次の回で探し直す
+            return;
+        };
+        let screens = to_screens(&mons, 1.0);
+        let win = Rect::from_min_max(
+            Pos2::new(r[0] as f32, r[1] as f32),
+            Pos2::new(r[2] as f32, r[3] as f32),
+        );
+        let want_w = mascot_size(scale_pct).x;
+        let k = if want_w > 0.0 && win.width() > 0.0 {
+            win.width() / want_w
+        } else {
+            1.0
+        };
+        if !self.logged_start {
+            self.logged_start = true;
+            log_monitors("start", &mons, r, ctx.pixels_per_point());
+        }
         let due = self.relocate_at.is_some_and(|t| Instant::now() >= t);
         // 動かしている最中 (位置が変わって 1 秒以内) は、置き去り扱いにしない
         let lost = self.relocate_at.is_none()
             && self.pos_dirty_since.is_none()
-            && !place::is_reachable(r, &screens);
+            && place::rescue_px(win, &screens, k).is_some();
         if due || lost {
             self.relocate_at = None;
             if let Some(p) = place::primary(&screens) {
-                let pos = place::corner_position(p.work, mascot_size(scale_pct));
-                ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos));
+                let pos = place::corner_position_px(p.work, win.size(), k);
+                let moved = crate::win::move_window(hwnd, pos.x as i32, pos.y as i32);
+                log_monitors(
+                    if lost {
+                        "lost->moved"
+                    } else {
+                        "changed->moved"
+                    },
+                    &mons,
+                    r,
+                    ctx.pixels_per_point(),
+                );
+                if !moved {
+                    log_monitors("move-failed", &mons, r, ctx.pixels_per_point());
+                }
             }
         }
     }
@@ -302,7 +344,11 @@ impl App {
             return;
         }
         let new_size = mascot_size(pct);
-        if !hidden && let Some(r) = ctx.input(|i| i.viewport().outer_rect) {
+        // 最初の 1 回は窓を作ったときの大きさのままなので動かさない (直前に送った定位置への移動を上書きしてしまう)
+        if self.scale_applied.is_some()
+            && !hidden
+            && let Some(r) = ctx.input(|i| i.viewport().outer_rect)
+        {
             let pos = anchored_min(r.min, r.size(), new_size);
             ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos));
         }
@@ -1114,6 +1160,27 @@ fn step_scale(pct: u32, up: bool) -> u32 {
 /// 窓の大きさを変えても右下の角が動かない左上の位置 (鳩は窓の右下に立っているので)。
 fn anchored_min(old_min: Pos2, old_size: Vec2, new_size: Vec2) -> Pos2 {
     old_min + (old_size - new_size)
+}
+
+/// 窓の配置の診断ログ (`%LOCALAPPDATA%\HatoPo\monitor.log`)。キャラクターが見えないと言われたとき、
+/// 構成と窓の位置を後から確かめるため。肥大しないよう 64KB を超えたら作り直す。
+fn log_monitors(event: &str, mons: &[crate::win::Monitor], win: [i32; 4], ppp: f32) {
+    use std::io::Write;
+    let path = crate::boot::local_dir().join("monitor.log");
+    let big = std::fs::metadata(&path).is_ok_and(|m| m.len() > 64 * 1024);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(!big)
+        .write(true)
+        .truncate(big)
+        .open(&path);
+    if let Ok(mut f) = file {
+        let _ = writeln!(
+            f,
+            "{} {event} ppp={ppp} window={win:?} monitors={mons:?}",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+        );
+    }
 }
 
 /// モニターの一覧を点の座標にする (点 = 実ピクセル / pixels_per_point)。

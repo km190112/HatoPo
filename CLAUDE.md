@@ -31,7 +31,8 @@
 利用者の HatoPo は差出人の名前を出すために `directory.json` を読む (読むだけ)。
 `status\user|device\<名前>.json` は各 PC の HatoPo が起動時・日付が変わって最初の確認・完了時に書く生存印 (1 日 1 回。Ken 指摘 2026-10-23 で 15 分ごとから変更) (core の `touch`)。
 Ken は Releases の zip を Desktop に展開して試験導入している (loft.txt が指す)。そこには触らない。画面の確認は scratchpad に試験用の鳩の巣を作り、`LOCALAPPDATA` を差し替えて `--loft` で起動する (常駐中の HatoPo は止めて、終わったら起こし直す)。
-マスコットは画面構成 (モニター) が変わると、落ち着くのを待ってメイン画面の作業領域の右下へ戻す (`place.rs` が座標の計算、`win::monitors` が構成の取得)。一覧の窓はマスコットの隣に開く。
+マスコットは画面構成 (モニター) が変わると、落ち着くのを待ってメイン画面の作業領域の右下へ戻す (`place.rs` が座標の計算、`win::monitors` が構成の取得)。位置は egui の点ではなく Win32 の実ピクセル (`win::window_rect` / `move_window`) で見て動かす (モニターごとに拡大率が違うと点への換算がずれて窓が外へ出る。2026-11 Ken 報告)。配置の診断は `%LOCALAPPDATA%\HatoPo\monitor.log`。
+`Notice.complete_button` (None は古い通知で、一斉=出さない・個別=出す) が［完了］ボタンの有無。一斉送信の完了は通知を閉じず、押した本人の `read\` の印に `done` を付ける (Ken 決定 2026-11-14)。複数宛先は `group` が同じ通知で、管理画面は 1 行にまとめる。管理画面の表は文字を選択できるようにし、行を開くクリックは左端の選択不可の列で受ける。一覧の窓はマスコットの隣に開く。
 利用者が選んだキャラクターは `state.json` の `character` (None なら settings.json の既定)。著作権・ライセンスの画面は一覧の［HatoPo について］。
 `THIRD-PARTY-NOTICES.md` は `python scripts/third_party_notices.py` の生成物 (依存を変えたら流し直す)。AI で絵を増やす手順は `docs/キャラクター画像の作り方.md`。
 `loft-template/` は配布する鳩の巣の雛形 (`autostart/` に自動起動登録の bat/ps1 を含む)、

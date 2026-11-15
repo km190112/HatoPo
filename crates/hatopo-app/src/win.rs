@@ -19,7 +19,8 @@ use windows_sys::Win32::System::Threading::{
 };
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MessageBoxW, SW_SHOWNORMAL,
+    FindWindowW, GetWindowRect, MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MessageBoxW,
+    SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
 };
 use windows_sys::core::BOOL;
 
@@ -180,6 +181,38 @@ unsafe extern "system" fn collect_monitor(
         });
     }
     1
+}
+
+/// タイトルが一致するトップレベル窓を探す (HWND を数として返す)。
+pub fn find_window(title: &str) -> Option<isize> {
+    let t = wide(title);
+    let h = unsafe { FindWindowW(std::ptr::null(), t.as_ptr()) };
+    (!h.is_null()).then_some(h as isize)
+}
+
+/// 窓の位置と大きさ (left, top, right, bottom)。仮想デスクトップ上の実ピクセル。
+/// egui の点 (DPI で割った値) を介さないので、モニターごとに拡大率が違っても狂わない。
+pub fn window_rect(hwnd: isize) -> Option<[i32; 4]> {
+    let mut r: RECT = unsafe { std::mem::zeroed() };
+    if unsafe { GetWindowRect(hwnd as _, &mut r) } == 0 {
+        return None;
+    }
+    Some([r.left, r.top, r.right, r.bottom])
+}
+
+/// 窓の左上を実ピクセルで動かす (大きさ・重なり順・フォーカスは変えない)。
+pub fn move_window(hwnd: isize, x: i32, y: i32) -> bool {
+    unsafe {
+        SetWindowPos(
+            hwnd as _,
+            std::ptr::null_mut(),
+            x,
+            y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        ) != 0
+    }
 }
 
 /// 今つながっているモニターの一覧 (取れなければ空)。ケーブルを抜き挿しすると変わる。
