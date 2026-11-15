@@ -2,8 +2,8 @@
 
 use chrono::NaiveDateTime;
 use hatopo_core::{
-    Broken, ClientStatus, Directory, Filter, Kind, Loft, Member, Notice, ReadMark, Settings,
-    read_all_status,
+    Archived, Broken, ClientStatus, Directory, Filter, Kind, Loft, Member, Notice, ReadMark,
+    Settings, read_all_status,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -20,6 +20,8 @@ pub struct Data {
     pub months: Vec<String>,
     /// 通知 ID ごとの既読の印
     pub reads: HashMap<String, Vec<ReadMark>>,
+    /// 出ている通知の組 (group) ごとの、完了・期限切れ・削除で archive へ移った分
+    pub group_closed: HashMap<String, Vec<Archived>>,
     pub error: Option<String>,
 }
 
@@ -51,7 +53,53 @@ impl Data {
             .iter()
             .map(|n| (n.id.clone(), loft.readers(&n.id).unwrap_or_default()))
             .collect();
+        d.group_closed = load_group_closed(loft, &d.notices, &d.months);
         d
+    }
+
+    /// 組の宛先の表示。`taro ほか 2 人` / `PC-1 ほか 2 台`。組でなければ宛先そのまま。
+    pub fn target_summary(&self, kind: Kind, first: &str, total: usize) -> String {
+        let head = self.label(kind, first);
+        if total <= 1 {
+            return head;
+        }
+        let unit = if kind == Kind::Device { "台" } else { "人" };
+        format!("{head} ほか {} {unit}", total - 1)
+    }
+
+    /// 出ている通知の組 (1 件だけの送信も可) の宛先の表示。archive へ移った分も人数に入れる。
+    pub fn group_target_label(&self, members: &[Notice]) -> String {
+        let n = &members[0];
+        let closed = n
+            .group
+            .as_ref()
+            .and_then(|g| self.group_closed.get(g))
+            .map_or(0, Vec::len);
+        self.target_summary(n.target.kind, &n.target.name, members.len() + closed)
+    }
+
+    /// 組の進み具合: `完了 2・既読 1・未読 1`。
+    pub fn group_summary(&self, members: &[Notice]) -> String {
+        let closed: &[Archived] = members[0]
+            .group
+            .as_ref()
+            .and_then(|g| self.group_closed.get(g))
+            .map_or(&[], Vec::as_slice);
+        let done = closed
+            .iter()
+            .filter(|a| a.closed.reason == hatopo_core::CloseReason::Done)
+            .count();
+        let read = members
+            .iter()
+            .filter(|n| self.reads.get(&n.id).is_some_and(|r| !r.is_empty()))
+            .count();
+        let unread = members.len() - read;
+        let mut s = format!("完了 {done}・既読 {read}・未読 {unread}");
+        let other = closed.len() - done;
+        if other > 0 {
+            s.push_str(&format!("・終了 {other}"));
+        }
+        s
     }
 
     /// この通知の宛先ごとの既読 (未読が先)。
@@ -193,10 +241,66 @@ pub fn read_rows(
     rows
 }
 
-/// 一覧の「既読」の列。一斉は `3/10`、ユーザー宛は 既読 / 未読、端末宛は読んだ人数。
+/// 出ている通知の組ごとに、archive へ移った分を集める (組を作った月から今月まで)。
+fn load_group_closed(
+    loft: &Loft,
+    notices: &[Notice],
+    months: &[String],
+) -> HashMap<String, Vec<Archived>> {
+    let mut groups: BTreeMap<&str, String> = BTreeMap::new();
+    for n in notices {
+        if let Some(g) = n.group.as_deref() {
+            let m = n.created_at.format("%Y-%m").to_string();
+            let e = groups.entry(g).or_insert_with(|| m.clone());
+            if m < *e {
+                *e = m;
+            }
+        }
+    }
+    let mut out: HashMap<String, Vec<Archived>> = HashMap::new();
+    let Some(from) = groups.values().min().cloned() else {
+        return out;
+    };
+    for m in months.iter().filter(|m| **m >= from) {
+        for a in loft.archived(m).unwrap_or_default() {
+            if let Some(g) = a.notice.group.as_deref()
+                && groups.contains_key(g)
+            {
+                out.entry(g.to_string()).or_default().push(a);
+            }
+        }
+    }
+    out
+}
+
+/// 同じキーの行を 1 組にまとめる。キーの無い行は 1 件ずつ。順序は最初に出た行の位置。
+pub fn group_by_key<T: Clone>(rows: &[T], key: impl Fn(&T) -> Option<&str>) -> Vec<Vec<T>> {
+    let mut out: Vec<Vec<T>> = Vec::new();
+    let mut at: HashMap<String, usize> = HashMap::new();
+    for r in rows {
+        match key(r) {
+            Some(k) => match at.get(k) {
+                Some(&i) => out[i].push(r.clone()),
+                None => {
+                    at.insert(k.to_string(), out.len());
+                    out.push(vec![r.clone()]);
+                }
+            },
+            None => out.push(vec![r.clone()]),
+        }
+    }
+    out
+}
+
+/// 一覧の「既読」の列。一斉は `3/10 (完了 1)`、ユーザー宛は 完了 / 既読 / 未読、端末宛は読んだ人数。
 pub fn read_summary(kind: Kind, rows: &[ReadRow]) -> String {
     let read = rows.iter().filter(|r| r.mark.is_some()).count();
+    let done = rows
+        .iter()
+        .filter(|r| r.mark.as_ref().is_some_and(|m| m.done))
+        .count();
     match kind {
+        Kind::Broadcast if done > 0 => format!("{read}/{} (完了 {done})", rows.len()),
         Kind::Broadcast => format!("{read}/{}", rows.len()),
         _ if read == 0 => "未読".into(),
         Kind::User => "既読".into(),
@@ -258,6 +362,7 @@ mod tests {
             updated_at: None,
             updated_by: None,
             group: None,
+            complete_button: None,
         }
     }
 
@@ -310,6 +415,7 @@ mod tests {
             user: user.into(),
             host: "pc-1".into(),
             at: at(h),
+            done: false,
         }
     }
 
@@ -378,5 +484,82 @@ mod tests {
             !is_older("", "0.2.0"),
             "版の無い古い生存印は古いと決めつけない"
         );
+    }
+
+    fn grouped(id: &str, group: Option<&str>, user: &str) -> Notice {
+        let mut n = notice(Kind::User, user);
+        n.id = id.into();
+        n.group = group.map(str::to_string);
+        n
+    }
+
+    #[test]
+    fn same_group_becomes_one_row_in_first_seen_order() {
+        let rows = vec![
+            grouped("a", Some("g1"), "taro"),
+            grouped("b", None, "ken"),
+            grouped("c", Some("g1"), "hanako"),
+            grouped("d", Some("g2"), "jiro"),
+        ];
+        let g = group_by_key(&rows, |n| n.group.as_deref());
+        let ids: Vec<Vec<&str>> = g
+            .iter()
+            .map(|v| v.iter().map(|n| n.id.as_str()).collect())
+            .collect();
+        assert_eq!(ids, vec![vec!["a", "c"], vec!["b"], vec!["d"]]);
+        // 0 件でも壊れない
+        assert!(group_by_key::<Notice>(&[], |n| n.group.as_deref()).is_empty());
+    }
+
+    #[test]
+    fn group_row_shows_who_and_how_far_it_went() {
+        use hatopo_core::{Archived, CloseReason, Closed};
+        let mut d = Data::default();
+        let a = grouped("a", Some("g1"), "taro");
+        let b = grouped("b", Some("g1"), "hanako");
+        d.reads.insert("a".into(), vec![mark("taro", 9)]);
+        d.group_closed.insert(
+            "g1".into(),
+            vec![Archived {
+                notice: grouped("c", Some("g1"), "jiro"),
+                closed: Closed {
+                    at: at(10),
+                    by: Origin {
+                        user: "jiro".into(),
+                        host: "pc-3".into(),
+                    },
+                    reason: CloseReason::Done,
+                },
+                read_by: vec![],
+            }],
+        );
+        let members = vec![a, b];
+        assert_eq!(d.group_summary(&members), "完了 1・既読 1・未読 1");
+        // 完了済みの人も人数に入る: 出ている 2 人 + 完了 1 人
+        assert_eq!(d.group_target_label(&members), "taro ほか 2 人");
+        assert_eq!(d.target_summary(Kind::Device, "pc-1", 3), "pc-1 ほか 2 台");
+        assert_eq!(d.target_summary(Kind::User, "taro", 1), "taro");
+    }
+
+    #[test]
+    fn broadcast_summary_counts_done_separately() {
+        let rows = vec![
+            ReadRow {
+                user: "a".into(),
+                mark: Some(ReadMark {
+                    done: true,
+                    ..mark("a", 9)
+                }),
+            },
+            ReadRow {
+                user: "b".into(),
+                mark: Some(mark("b", 9)),
+            },
+            ReadRow {
+                user: "c".into(),
+                mark: None,
+            },
+        ];
+        assert_eq!(read_summary(Kind::Broadcast, &rows), "2/3 (完了 1)");
     }
 }

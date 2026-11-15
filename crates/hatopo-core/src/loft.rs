@@ -186,6 +186,7 @@ impl Loft {
             updated_at: None,
             updated_by: None,
             group,
+            complete_button: n.complete_button,
         };
         write_atomic(&dir.join(format!("{}.json", notice.id)), &to_json(&notice)?)?;
         Ok(notice)
@@ -229,6 +230,9 @@ impl Loft {
         n.urls = urls;
         n.start_at = start_at;
         n.end_at = edit.end_at;
+        if edit.complete_button.is_some() {
+            n.complete_button = edit.complete_button;
+        }
         n.revision += 1;
         n.updated_at = Some(now);
         n.updated_by = Some(by.clone());

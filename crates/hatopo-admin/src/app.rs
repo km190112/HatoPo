@@ -3,7 +3,7 @@
 //! 共有フォルダへの読み書きは画面のスレッドで行う (管理者が 1〜2 人で使う道具なので、
 //! 遅い共有で一瞬固まるのは許す)。読み直しは［再読込］と、書き込んだ直後に行う。
 
-use crate::data::{Data, MemberRow, is_older, member_rows, read_summary};
+use crate::data::{Data, MemberRow, group_by_key, is_older, member_rows, read_rows, read_summary};
 use crate::form::NoticeForm;
 use chrono::{Local, NaiveDateTime};
 use eframe::egui::{self, Color32, RichText};
@@ -55,6 +55,12 @@ struct MemberImport {
     result: ImportResult,
 }
 
+/// 完了の記録の詳細。同じ送信 (組) なら全員分と、まだ出ている (未完了の) 通知も並べる。
+struct ArchiveDetail {
+    members: Vec<Archived>,
+    active: Vec<Notice>,
+}
+
 pub struct AdminApp {
     loft: Loft,
     loft_input: String,
@@ -84,13 +90,29 @@ pub struct AdminApp {
     a_rows: Vec<Archived>,
     a_reason: Option<CloseReason>,
     a_keyword: String,
+    a_selected: Option<String>,
+    a_detail: Option<ArchiveDetail>,
 
     m_edit: Option<MemberEdit>,
     m_search: String,
     m_import: Option<MemberImport>,
 
     s_edit: Settings,
+    show_gallery: bool,
+    /// キャラクター一覧の絵 (読めなかったものは None)。一覧を開くたびに読み直す
+    textures: std::collections::HashMap<PathBuf, Option<egui::TextureHandle>>,
 }
+
+/// キャラクターが持つ絵 (`poses\<名前>.png`) と、画面に出す説明。
+const POSE_LABELS: [(&str, &str); 7] = [
+    ("idle", "通知なし"),
+    ("letter", "未開封あり"),
+    ("letter_calm", "目は通した"),
+    ("happy", "1 件完了"),
+    ("celebrate", "全部完了"),
+    ("puzzled", "接続できない"),
+    ("sleep", "休み中"),
+];
 
 fn now() -> NaiveDateTime {
     Local::now().naive_local()
@@ -143,8 +165,8 @@ impl AdminApp {
         crate::setup_fonts(&cc.egui_ctx);
         cc.egui_ctx.set_visuals(egui::Visuals::light());
         cc.egui_ctx.style_mut(|s| {
-            // 表の文字が選択用にクリックを受け取ると、行のクリックが効かなくなる (文字の上を押すと選べない)
-            s.interaction.selectable_labels = false;
+            // 文字はドラッグで選んでコピーできる。表の行を開くクリックは、選択できない左端の列で受ける
+            s.interaction.selectable_labels = true;
             s.spacing.item_spacing = egui::vec2(8.0, 6.0);
             s.spacing.button_padding = egui::vec2(10.0, 4.0);
         });
@@ -175,10 +197,14 @@ impl AdminApp {
             a_rows: Vec::new(),
             a_reason: None,
             a_keyword: String::new(),
+            a_selected: None,
+            a_detail: None,
             m_edit: None,
             m_search: String::new(),
             m_import: None,
             s_edit: Settings::default(),
+            show_gallery: false,
+            textures: Default::default(),
         };
         app.reload();
         app
@@ -201,6 +227,8 @@ impl AdminApp {
     }
 
     fn load_archive(&mut self) {
+        self.a_selected = None;
+        self.a_detail = None;
         self.a_rows = if self.a_month.is_empty() {
             Vec::new()
         } else {
@@ -288,6 +316,16 @@ impl eframe::App for AdminApp {
                 .min_width(380.0)
                 .show(ctx, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| self.editor(ui));
+                });
+        }
+
+        if self.tab == Tab::Archive && self.a_detail.is_some() {
+            egui::SidePanel::right("archive-detail")
+                .resizable(true)
+                .default_width(470.0)
+                .min_width(380.0)
+                .show(ctx, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| self.archive_detail(ui));
                 });
         }
 
@@ -495,7 +533,15 @@ impl AdminApp {
             ui.label(RichText::new("条件に合う通知はありません。").color(MUTED));
             return;
         }
-        let mut clicked: Option<Notice> = None;
+        let groups = group_by_key(&rows, |n| n.group.as_deref());
+        ui.label(
+            RichText::new(
+                "左端の「種類」をクリックすると詳細が開きます。文字はドラッグで選んでコピーできます。複数の宛先へ送ったものは 1 行にまとめています。",
+            )
+            .small()
+            .color(MUTED),
+        );
+        let mut clicked: Option<Vec<Notice>> = None;
         egui::ScrollArea::horizontal().show(ui, |ui| {
             TableBuilder::new(ui)
                 .striped(true)
@@ -509,7 +555,7 @@ impl AdminApp {
                 .column(Column::exact(124.0))
                 .column(Column::exact(84.0))
                 .column(Column::exact(70.0))
-                .column(Column::exact(76.0))
+                .column(Column::exact(190.0))
                 .column(Column::remainder().at_least(60.0))
                 .header(24.0, |mut h| {
                     for c in [
@@ -529,14 +575,26 @@ impl AdminApp {
                     }
                 })
                 .body(|mut body| {
-                    for n in &rows {
+                    for g in &groups {
+                        let n = &g[0];
                         body.row(26.0, |mut row| {
-                            row.set_selected(self.selected.as_deref() == Some(n.id.as_str()));
+                            row.set_selected(
+                                self.selected
+                                    .as_deref()
+                                    .is_some_and(|s| g.iter().any(|m| m.id == s)),
+                            );
                             row.col(|ui| {
-                                ui.label(kind_label(n.target.kind));
+                                // 選択できない文字にして、行のクリックを受ける
+                                ui.add(
+                                    egui::Label::new(kind_label(n.target.kind)).selectable(false),
+                                );
                             });
                             row.col(|ui| {
-                                ui.label(self.data.label(n.target.kind, &n.target.name));
+                                if n.group.is_some() {
+                                    ui.label(self.data.group_target_label(g));
+                                } else {
+                                    ui.label(self.data.label(n.target.kind, &n.target.name));
+                                }
                             });
                             row.col(|ui| {
                                 ui.label(&n.title);
@@ -559,7 +617,11 @@ impl AdminApp {
                                 ui.colored_label(c, s);
                             });
                             row.col(|ui| {
-                                ui.label(read_summary(n.target.kind, &self.data.read_rows(n)));
+                                if n.group.is_some() {
+                                    ui.label(self.data.group_summary(g));
+                                } else {
+                                    ui.label(read_summary(n.target.kind, &self.data.read_rows(n)));
+                                }
                             });
                             row.col(|ui| {
                                 if n.group.is_some() {
@@ -567,14 +629,18 @@ impl AdminApp {
                                 }
                             });
                             if row.response().clicked() {
-                                clicked = Some(n.clone());
+                                clicked = Some(g.clone());
                             }
                         });
                     }
                 });
         });
-        if let Some(n) = clicked {
-            self.select(&n);
+        if let Some(g) = clicked {
+            self.select(&g[0]);
+            // 複数の宛先へ送ったものは、編集も削除も全員分が初期値
+            if g.len() > 1 {
+                self.apply_to_group = true;
+            }
         }
     }
 
@@ -667,7 +733,7 @@ impl AdminApp {
                 .count();
             ui.label(
                 RichText::new(format!(
-                    "同じ送信の状況: {} 件中 {} 件完了",
+                    "同じ送信の状況 (既読・未読・完了): {} 件中 {} 件完了",
                     active.len() + closed.len(),
                     done
                 ))
@@ -723,7 +789,17 @@ impl AdminApp {
                 "既読: この PC でまだ誰も既読にしていません".to_string()
             }
             Kind::Device => format!("既読: この PC で {read} 人が既読にしました"),
-            _ => format!("既読: {} 人中 {read} 人", rows.len()),
+            _ => {
+                let done = rows
+                    .iter()
+                    .filter(|r| r.mark.as_ref().is_some_and(|m| m.done))
+                    .count();
+                if done > 0 {
+                    format!("既読: {} 人中 {read} 人 (うち完了 {done} 人)", rows.len())
+                } else {
+                    format!("既読: {} 人中 {read} 人", rows.len())
+                }
+            }
         };
         ui.label(RichText::new(head).strong());
         if n.target.kind == Kind::Broadcast && rows.is_empty() {
@@ -740,7 +816,7 @@ impl AdminApp {
                     ui.label(self.data.label(Kind::User, &r.user));
                     match &r.mark {
                         Some(m) => {
-                            ui.colored_label(OK, "既読");
+                            ui.colored_label(OK, if m.done { "完了" } else { "既読" });
                             ui.label(format!("{} ({})", fmt(m.at), m.host));
                         }
                         None => {
@@ -848,11 +924,15 @@ impl AdminApp {
                 self.target_picker(ui);
             } else {
                 ui.label(
-                    RichText::new("全員の一覧のいちばん上に出ます。利用者は完了できません (管理者が削除するか、終了日で片付きます)。")
+                    RichText::new("全員の一覧のいちばん上に出ます。［完了］ボタンを出すと、押した人の画面だけ消えます。出さなければ、管理者が削除するか終了日で片付きます。")
                         .color(MUTED),
                 );
             }
             ui.add_space(8.0);
+            // 完了ボタンは、触るまで宛先の種類の既定 (全員宛ては出さない) に従う
+            if !self.c_form.complete_touched {
+                self.c_form.complete_button = self.c_kind != Kind::Broadcast;
+            }
             self.c_form.ui(ui, "compose");
             ui.add_space(10.0);
             let count = if self.c_kind == Kind::Broadcast {
@@ -1076,16 +1156,26 @@ impl AdminApp {
             ui.label(RichText::new("この月の記録はありません。").color(MUTED));
             return;
         }
+        let groups = group_by_key(&rows, |a| a.notice.group.as_deref());
+        ui.label(
+            RichText::new(
+                "左端の「閉じた日時」をクリックすると、誰がいつ完了したか・未完了の人の一覧が開きます。文字はドラッグで選んでコピーできます。",
+            )
+            .small()
+            .color(MUTED),
+        );
+        let mut clicked: Option<Vec<Archived>> = None;
         egui::ScrollArea::horizontal().show(ui, |ui| {
             TableBuilder::new(ui)
                 .striped(true)
                 .resizable(true)
+                .sense(egui::Sense::click())
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                 .column(Column::exact(124.0))
+                .column(Column::exact(100.0))
+                .column(Column::initial(200.0).at_least(100.0))
                 .column(Column::exact(64.0))
-                .column(Column::initial(170.0).at_least(100.0))
-                .column(Column::exact(64.0))
-                .column(Column::initial(150.0).at_least(80.0))
+                .column(Column::initial(170.0).at_least(80.0))
                 .column(Column::remainder().at_least(160.0))
                 .header(24.0, |mut h| {
                     for c in [
@@ -1102,41 +1192,270 @@ impl AdminApp {
                     }
                 })
                 .body(|mut body| {
-                    for a in rows {
+                    for g in &groups {
+                        let a = g[0];
+                        let multi = g.len() > 1;
                         body.row(24.0, |mut row| {
+                            row.set_selected(
+                                self.a_selected
+                                    .as_deref()
+                                    .is_some_and(|s| g.iter().any(|m| m.notice.id == s)),
+                            );
                             row.col(|ui| {
-                                ui.label(fmt(a.closed.at));
+                                let at = g.iter().map(|m| m.closed.at).max().unwrap_or(a.closed.at);
+                                // 選択できない文字にして、行のクリックを受ける
+                                ui.add(egui::Label::new(fmt(at)).selectable(false));
                             });
                             row.col(|ui| {
-                                let c = match a.closed.reason {
-                                    CloseReason::Done => OK,
-                                    CloseReason::Expired => MUTED,
-                                    CloseReason::Deleted => BAD,
-                                };
-                                ui.colored_label(c, reason_label(a.closed.reason));
+                                if multi {
+                                    let done = g
+                                        .iter()
+                                        .filter(|m| m.closed.reason == CloseReason::Done)
+                                        .count();
+                                    ui.label(format!("完了 {done}/{}", g.len()));
+                                } else {
+                                    let c = match a.closed.reason {
+                                        CloseReason::Done => OK,
+                                        CloseReason::Expired => MUTED,
+                                        CloseReason::Deleted => BAD,
+                                    };
+                                    ui.colored_label(c, reason_label(a.closed.reason));
+                                }
                             });
                             row.col(|ui| {
-                                ui.label(format!(
-                                    "{} ({})",
-                                    self.data.label(Kind::User, &a.closed.by.user),
-                                    a.closed.by.host
-                                ));
+                                let who: Vec<String> = g
+                                    .iter()
+                                    .map(|m| {
+                                        format!(
+                                            "{} ({})",
+                                            self.data.label(Kind::User, &m.closed.by.user),
+                                            m.closed.by.host
+                                        )
+                                    })
+                                    .collect();
+                                ui.label(who.join(" / "));
                             });
                             row.col(|ui| {
                                 ui.label(kind_label(a.notice.target.kind));
                             });
                             row.col(|ui| {
-                                ui.label(
-                                    self.data.label(a.notice.target.kind, &a.notice.target.name),
-                                );
+                                if multi {
+                                    ui.label(self.data.target_summary(
+                                        a.notice.target.kind,
+                                        &a.notice.target.name,
+                                        g.len(),
+                                    ));
+                                } else {
+                                    ui.label(
+                                        self.data
+                                            .label(a.notice.target.kind, &a.notice.target.name),
+                                    );
+                                }
                             });
                             row.col(|ui| {
                                 ui.label(&a.notice.title);
                             });
+                            if row.response().clicked() {
+                                clicked = Some(g.iter().map(|m| (*m).clone()).collect());
+                            }
                         });
                     }
                 });
         });
+        if let Some(g) = clicked {
+            self.select_archived(&g);
+        }
+    }
+
+    /// 完了の記録の行を開く。同じ送信 (組) なら、全員分と、まだ未完了の通知も集める。
+    fn select_archived(&mut self, g: &[Archived]) {
+        let first = &g[0];
+        self.a_selected = Some(first.notice.id.clone());
+        let found = first.notice.group.as_deref().and_then(|gid| {
+            self.loft
+                .group_status(gid, first.notice.created_at, now())
+                .ok()
+        });
+        let (mut members, active) = match found {
+            Some((active, closed)) if !closed.is_empty() => (closed, active),
+            _ => (g.to_vec(), Vec::new()),
+        };
+        members.sort_by_key(|a| a.closed.at);
+        self.a_detail = Some(ArchiveDetail { members, active });
+    }
+
+    /// 完了の記録の詳細。誰がいつ完了したか、まだの人は誰かを、通知の画面と同じ作りで見せる。
+    fn archive_detail(&mut self, ui: &mut egui::Ui) {
+        let Some(d) = &self.a_detail else {
+            return;
+        };
+        let Some(first) = d.members.first() else {
+            return;
+        };
+        let n = &first.notice;
+        let mut close = false;
+        let mut copy = false;
+        ui.horizontal(|ui| {
+            ui.heading("完了の記録");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("閉じる").clicked() {
+                    close = true;
+                }
+                if ui.button("全文をコピー").clicked() {
+                    copy = true;
+                }
+            });
+        });
+
+        // 表示とコピーで同じ行を使う: (宛先, 状態, 色, 日時, 誰が)
+        let mut rows: Vec<(String, String, Color32, String, String)> = Vec::new();
+        for a in &d.members {
+            let c = match a.closed.reason {
+                CloseReason::Done => OK,
+                CloseReason::Expired => MUTED,
+                CloseReason::Deleted => BAD,
+            };
+            rows.push((
+                self.data.label(a.notice.target.kind, &a.notice.target.name),
+                reason_label(a.closed.reason).to_string(),
+                c,
+                fmt(a.closed.at),
+                format!(
+                    "{}@{}",
+                    self.data.label(Kind::User, &a.closed.by.user),
+                    a.closed.by.host
+                ),
+            ));
+        }
+        for a in &d.active {
+            let mark = self.data.read_rows(a).into_iter().find_map(|r| r.mark);
+            let who = mark
+                .as_ref()
+                .map(|m| format!("{}@{}", m.user, m.host))
+                .unwrap_or_default();
+            let at = mark.as_ref().map(|m| fmt(m.at)).unwrap_or_default();
+            let (state, c) = if mark.is_some() {
+                ("未完了 (既読)", WARN)
+            } else {
+                ("未完了 (未読)", BAD)
+            };
+            rows.push((
+                self.data.label(a.target.kind, &a.target.name),
+                state.to_string(),
+                c,
+                at,
+                who,
+            ));
+        }
+        let count = |r: CloseReason| d.members.iter().filter(|a| a.closed.reason == r).count();
+        let summary = format!(
+            "全 {} 件: 完了 {} / 未完了 {} / 期限切れ {} / 削除 {}",
+            d.members.len() + d.active.len(),
+            count(CloseReason::Done),
+            d.active.len(),
+            count(CloseReason::Expired),
+            count(CloseReason::Deleted),
+        );
+        // 一斉・端末宛ては宛先が人ではないので、読んだ人の一覧も出す
+        let readers = if d.members.len() == 1 && n.target.kind != Kind::User {
+            read_rows(n, &first.read_by, &self.data.directory, &self.data.statuses)
+        } else {
+            Vec::new()
+        };
+
+        ui.label(
+            RichText::new(format!(
+                "{} ・ {}\n作成 {} ({}@{})",
+                kind_label(n.target.kind),
+                self.data.label(n.target.kind, &n.target.name),
+                fmt(n.created_at),
+                n.created_by.user,
+                n.created_by.host,
+            ))
+            .color(MUTED),
+        );
+        ui.add_space(4.0);
+        ui.add(egui::Label::new(RichText::new(&n.title).strong().size(16.0)).selectable(true));
+        if !n.body.is_empty() {
+            ui.add(egui::Label::new(&n.body).selectable(true));
+        }
+        for u in &n.urls {
+            ui.add(egui::Label::new(u).selectable(true));
+        }
+        if let Some(due) = n.due {
+            ui.label(format!("依頼期限 {}", due.format("%Y/%m/%d")));
+        }
+        ui.add_space(8.0);
+        ui.separator();
+        ui.label(RichText::new(&summary).strong());
+        egui::Grid::new("archive-status")
+            .striped(true)
+            .num_columns(4)
+            .show(ui, |ui| {
+                for (target, state, c, at, who) in &rows {
+                    ui.label(target);
+                    ui.colored_label(*c, state);
+                    ui.label(at);
+                    ui.label(who);
+                    ui.end_row();
+                }
+            });
+        if !readers.is_empty() {
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new(format!(
+                    "既読: {} 人中 {} 人",
+                    readers.len(),
+                    readers.iter().filter(|r| r.mark.is_some()).count()
+                ))
+                .strong(),
+            );
+            egui::Grid::new("archive-readers")
+                .striped(true)
+                .num_columns(3)
+                .show(ui, |ui| {
+                    for r in &readers {
+                        ui.label(self.data.label(Kind::User, &r.user));
+                        match &r.mark {
+                            Some(m) => {
+                                ui.colored_label(OK, if m.done { "完了" } else { "既読" });
+                                ui.label(format!("{} ({})", fmt(m.at), m.host));
+                            }
+                            None => {
+                                ui.colored_label(BAD, "未読");
+                                ui.label("");
+                            }
+                        }
+                        ui.end_row();
+                    }
+                });
+        }
+
+        if copy {
+            let mut text = format!(
+                "{}\n{} ・ {}\n{}\n",
+                n.title,
+                kind_label(n.target.kind),
+                self.data.label(n.target.kind, &n.target.name),
+                summary
+            );
+            for (target, state, _, at, who) in &rows {
+                text.push_str(&format!("{target}\t{state}\t{at}\t{who}\n"));
+            }
+            for r in &readers {
+                let (st, at) = match &r.mark {
+                    Some(m) => (if m.done { "完了" } else { "既読" }, fmt(m.at)),
+                    None => ("未読", String::new()),
+                };
+                text.push_str(&format!("{}\t{st}\t{at}\n", r.user));
+            }
+            ui.ctx().copy_text(text);
+            self.ok("内容をコピーしました。");
+        }
+        if close {
+            self.a_selected = None;
+            self.a_detail = None;
+        }
     }
 
     // ------------------------------------------------------------------ 名簿
@@ -1213,9 +1532,11 @@ impl AdminApp {
         let q = self.m_search.to_lowercase();
         let mut action: Option<MemberRow> = None;
         ui.label(
-            RichText::new("行をクリックすると直せます。")
-                .small()
-                .color(MUTED),
+            RichText::new(
+                "左端の ID をクリックすると直せます。文字はドラッグで選んでコピーできます。",
+            )
+            .small()
+            .color(MUTED),
         );
         egui::ScrollArea::horizontal().show(ui, |ui| {
             TableBuilder::new(ui)
@@ -1258,7 +1579,8 @@ impl AdminApp {
                                 }
                             };
                             row.col(|ui| {
-                                ui.label(weak(r.member.id.clone()));
+                                // 選択できない文字にして、行のクリック (編集) を受ける
+                                ui.add(egui::Label::new(weak(r.member.id.clone())).selectable(false));
                             });
                             row.col(|ui| {
                                 ui.label(weak(r.member.name.clone()));
@@ -1533,6 +1855,97 @@ impl AdminApp {
     }
 
     // ------------------------------------------------------------------ 設定
+    /// 鳩の巣の `character_icon\` にあるキャラクターごとに、持っている絵を並べる。
+    fn character_gallery(&mut self, ui: &mut egui::Ui, chars: &[String]) {
+        if chars.is_empty() {
+            ui.label(
+                RichText::new("鳩の巣の character_icon フォルダにキャラクターがありません。")
+                    .color(WARN),
+            );
+            return;
+        }
+        ui.label(
+            RichText::new(
+                "［みんなの既定にする］を押したあと、下の［保存］で settings.json に書きます。絵が無いポーズは、利用者の HatoPo では同梱の HatoPoBlue の絵で補います。",
+            )
+            .small()
+            .color(MUTED),
+        );
+        let root = self.loft.root().join("character_icon");
+        for name in chars {
+            ui.group(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(name).strong());
+                    if *name == self.s_edit.character {
+                        ui.colored_label(OK, "みんなの既定");
+                    } else if ui.button("みんなの既定にする").clicked() {
+                        self.s_edit.character = name.clone();
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    for (stem, label) in POSE_LABELS {
+                        let path = root.join(name).join("poses").join(format!("{stem}.png"));
+                        ui.vertical(|ui| {
+                            ui.set_width(104.0);
+                            match self.pose_texture(ui.ctx(), &path) {
+                                Some(t) => {
+                                    ui.add(
+                                        egui::Image::new(&t)
+                                            .fit_to_exact_size(egui::Vec2::splat(96.0)),
+                                    );
+                                }
+                                None => {
+                                    let (r, _) = ui.allocate_exact_size(
+                                        egui::Vec2::splat(96.0),
+                                        egui::Sense::hover(),
+                                    );
+                                    ui.painter().rect_stroke(
+                                        r,
+                                        4.0,
+                                        egui::Stroke::new(1.0_f32, MUTED),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                    ui.painter().text(
+                                        r.center(),
+                                        egui::Align2::CENTER_CENTER,
+                                        "絵なし",
+                                        egui::FontId::proportional(13.0),
+                                        MUTED,
+                                    );
+                                }
+                            }
+                            ui.label(RichText::new(label).small());
+                        });
+                    }
+                });
+            });
+        }
+    }
+
+    fn pose_texture(
+        &mut self,
+        ctx: &egui::Context,
+        path: &std::path::Path,
+    ) -> Option<egui::TextureHandle> {
+        if let Some(t) = self.textures.get(path) {
+            return t.clone();
+        }
+        let tex = std::fs::read(path)
+            .ok()
+            .and_then(|b| image::load_from_memory_with_format(&b, image::ImageFormat::Png).ok())
+            .map(|img| {
+                let rgba = img.to_rgba8();
+                let size = [rgba.width() as usize, rgba.height() as usize];
+                ctx.load_texture(
+                    path.display().to_string(),
+                    egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw()),
+                    egui::TextureOptions::LINEAR,
+                )
+            });
+        self.textures.insert(path.to_path_buf(), tex.clone());
+        tex
+    }
+
     fn settings(&mut self, ui: &mut egui::Ui) {
         ui.heading("設定 (settings.json)");
         ui.label(
@@ -1547,6 +1960,19 @@ impl AdminApp {
         }
         ui.add_space(8.0);
         let chars = Settings::characters(self.loft.root());
+        let label = if self.show_gallery {
+            "キャラクターの一覧を閉じる"
+        } else {
+            "キャラクターの絵を一覧で見る"
+        };
+        if ui.button(label).clicked() {
+            self.show_gallery = !self.show_gallery;
+            self.textures.clear(); // 開くたびに読み直す (絵を足した直後でも見える)
+        }
+        if self.show_gallery {
+            self.character_gallery(ui, &chars);
+        }
+        ui.add_space(8.0);
         egui::Grid::new("settings")
             .num_columns(3)
             .spacing([16.0, 10.0])

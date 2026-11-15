@@ -94,6 +94,10 @@ struct Fields {
     /// 通知終了日時。日付だけならその日いっぱい。省略すると完了まで
     #[arg(long, default_value = "")]
     end: String,
+    /// HatoPo の通知画面に［完了］ボタンを出すか (true / false)。省略すると宛先の種類の既定
+    /// (一斉は出さない・個別は出す)。変更のときは省略すると今のまま
+    #[arg(long)]
+    complete_button: Option<bool>,
 }
 
 impl Fields {
@@ -105,6 +109,7 @@ impl Fields {
             urls: self.urls.clone(),
             start_at: parse_when(&self.start, DayEdge::Start)?,
             end_at: parse_when(&self.end, DayEdge::End)?,
+            complete_button: self.complete_button,
         })
     }
 }
@@ -155,8 +160,8 @@ fn run(loft: &Loft, cmd: Cmd) -> Result<(), Error> {
                 .iter()
                 .map(|t| Target::parse(t))
                 .collect::<Result<Vec<_>, _>>()?;
-            for t in targets {
-                let made = loft.add(&t, &n, &me, now())?;
+            // 複数の宛先は 1 つの組にして、管理画面で 1 行にまとめて見られるようにする
+            for made in loft.add_many(&targets, &n, &me, now())? {
                 println!("{}\t{}", made.id, made.target);
             }
         }

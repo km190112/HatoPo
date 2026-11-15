@@ -33,6 +33,7 @@ impl Loft {
             user: user.clone(),
             host: by.host.clone(),
             at: now,
+            done: false,
         };
         fs::create_dir_all(&dir).map_err(io(&dir))?;
         write_atomic(&dir.join(format!("{user}.json")), &to_json(&mark)?)?;
@@ -42,6 +43,42 @@ impl Loft {
             return Err(Error::NotFound { id: id.into() });
         }
         Ok(mark)
+    }
+
+    /// 一斉送信を自分の分だけ完了にする (印に `done` を付ける。通知は閉じない)。
+    /// 通知がもう無ければ `NotFound`。
+    pub fn mark_done(&self, id: &str, by: &Origin, now: NaiveDateTime) -> Result<ReadMark> {
+        let user = normalize_name(&by.user)?;
+        let dir = self.read_dir_of(id)?;
+        self.locate(id)?;
+        let mark = ReadMark {
+            user: user.clone(),
+            host: by.host.clone(),
+            at: now,
+            done: true,
+        };
+        fs::create_dir_all(&dir).map_err(io(&dir))?;
+        write_atomic(&dir.join(format!("{user}.json")), &to_json(&mark)?)?;
+        if let Err(Error::NotFound { .. }) = self.locate(id) {
+            self.clear_reads(id);
+            return Err(Error::NotFound { id: id.into() });
+        }
+        Ok(mark)
+    }
+
+    /// この人が完了にしているか (一斉送信用)。印が無い・読めない印は `false`。
+    /// 共有に届かないときは `Err` (未完了と取り違えない)。
+    pub fn is_done(&self, id: &str, user: &str) -> Result<bool> {
+        let p = self
+            .read_dir_of(id)?
+            .join(format!("{}.json", normalize_name(user)?));
+        match read_json::<ReadMark>(&p) {
+            Ok(m) => Ok(m.done),
+            Err(_) => {
+                self.check_online()?;
+                Ok(false)
+            }
+        }
     }
 
     /// 未読に戻す。印が無ければ何もしない。
@@ -119,6 +156,27 @@ mod tests {
         loft.add(&Target::broadcast(), &n, &who("admin", "pc-admin"), at(8))
             .unwrap()
             .id
+    }
+
+    #[test]
+    fn broadcast_done_is_per_user_and_keeps_the_notice() {
+        let d = tempfile::tempdir().unwrap();
+        let loft = Loft::new(d.path());
+        let id = broadcast(&loft);
+        assert!(!loft.is_done(&id, "taro").unwrap(), "印なし");
+        loft.mark_read(&id, &who("taro", "pc-1"), at(9)).unwrap();
+        assert!(!loft.is_done(&id, "taro").unwrap(), "既読は完了ではない");
+        loft.mark_done(&id, &who("Taro", "pc-1"), at(10)).unwrap();
+        assert!(loft.is_done(&id, "taro").unwrap());
+        assert!(!loft.is_done(&id, "hanako").unwrap(), "他の人は未完了");
+        assert!(loft.get(&id).is_ok(), "通知は閉じない");
+        let marks = loft.readers(&id).unwrap();
+        assert_eq!(marks.len(), 1);
+        assert!(marks[0].done);
+        let a = loft
+            .close(&id, CloseReason::Deleted, &who("admin", "pc-admin"), at(12))
+            .unwrap();
+        assert!(a.read_by[0].done, "archive にも完了が残る");
     }
 
     #[test]

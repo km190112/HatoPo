@@ -55,6 +55,10 @@ pub struct NoticeForm {
     pub urls: [String; 3],
     pub start: When,
     pub end: When,
+    /// 利用者の通知画面に［完了］ボタンを出すか
+    pub complete_button: bool,
+    /// 利用者が (または既存の通知から) 決めたか。false の間は宛先の種類の既定に従う
+    pub complete_touched: bool,
 }
 
 impl NoticeForm {
@@ -67,6 +71,8 @@ impl NoticeForm {
             urls: Default::default(),
             start: When::off(today, 9, 0),
             end: When::off(today, 23, 59),
+            complete_button: true,
+            complete_touched: false,
         }
     }
 
@@ -83,6 +89,8 @@ impl NoticeForm {
             urls,
             start: When::from(Some(n.start_at), today, 9, 0),
             end: When::from(n.end_at, today, 23, 59),
+            complete_button: n.can_complete(),
+            complete_touched: true,
         }
     }
 
@@ -95,6 +103,7 @@ impl NoticeForm {
             urls: self.urls.to_vec(),
             start_at: self.start.value(),
             end_at: self.end.value(),
+            complete_button: Some(self.complete_button),
         }
     }
 
@@ -154,6 +163,23 @@ impl NoticeForm {
                     &format!("end-{salt}"),
                     "完了されるまで出す",
                 );
+                ui.end_row();
+
+                ui.label("完了ボタン");
+                ui.horizontal_wrapped(|ui| {
+                    if ui
+                        .checkbox(&mut self.complete_button, "利用者の通知画面に［完了］を出す")
+                        .changed()
+                    {
+                        self.complete_touched = true;
+                    }
+                    ui.label(
+                        RichText::new(
+                            "全員宛ては、押した人の画面だけ消えます (ほかの人には残る)。出さなければ、管理者が消すか終了日まで残ります",
+                        )
+                        .weak(),
+                    );
+                });
                 ui.end_row();
             });
     }
@@ -221,6 +247,7 @@ mod tests {
             updated_at: None,
             updated_by: None,
             group: None,
+            complete_button: None,
         };
         let n = NoticeForm::from_notice(&notice, day(1)).to_new();
         assert_eq!(n.title, "停電");

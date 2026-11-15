@@ -106,6 +106,7 @@ fn new_notice(
         urls: vec![url1, url2, url3],
         start_at: parse_when(&start, DayEdge::Start)?,
         end_at: parse_when(&end, DayEdge::End)?,
+        complete_button: None,
     })
 }
 
