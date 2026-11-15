@@ -110,6 +110,7 @@ fn add(root: &Bstr, target: &str, title: &str, end: &str, out: &mut Out) -> i32 
             null(),
             null(),
             e.p(),
+            null(),
             out.p(),
         )
     }
@@ -153,6 +154,62 @@ fn add_then_find_round_trips_japanese_and_emoji() {
     assert_eq!(res.cell(1, 11).vt, VT_EMPTY, "終了日なしは Empty");
 }
 
+fn add_with_button(root: &Bstr, target: &str, button: &str, out: &mut Out) -> i32 {
+    let (t, ti, b) = (Bstr::new(target), Bstr::new("件名"), Bstr::new(button));
+    unsafe {
+        HatoPo_Add(
+            root.p(),
+            t.p(),
+            ti.p(),
+            null(),
+            null(),
+            null(),
+            null(),
+            null(),
+            null(),
+            null(),
+            b.p(),
+            out.p(),
+        )
+    }
+}
+
+/// 完了ボタンの列 (最後) を、宛先を指定して探して読む
+fn button_of(root: &Bstr, target: &str) -> String {
+    let mut res = Out::new();
+    let k = Bstr::new(target.split(':').next().unwrap());
+    assert_eq!(
+        unsafe { HatoPo_Find(root.p(), k.p(), null(), null(), res.p()) },
+        HP_OK
+    );
+    assert_eq!(res.cell_text(0, COLUMNS.len() as i32 - 1), "完了ボタン");
+    res.cell_text(1, COLUMNS.len() as i32 - 1)
+}
+
+#[test]
+fn complete_button_defaults_by_kind_and_can_be_set() {
+    let (_d, r) = root();
+    let mut out = Out::new();
+    // 空は宛先の種類の既定: 個別は出す、一斉は出さない
+    assert_eq!(add_with_button(&r, "user:taro", "", &mut out), HP_OK);
+    assert_eq!(button_of(&r, "user:taro"), "1");
+    assert_eq!(add_with_button(&r, "broadcast", "", &mut out), HP_OK);
+    assert_eq!(button_of(&r, "broadcast"), "0");
+    // 一斉でも出せる / 個別でも出さない
+    let mut out = Out::new();
+    assert_eq!(add_with_button(&r, "device:pc-1", "0", &mut out), HP_OK);
+    assert_eq!(button_of(&r, "device:pc-1"), "0");
+    let mut out = Out::new();
+    assert_eq!(add_with_button(&r, "broadcast", "1", &mut out), HP_OK);
+    // 分からない指定は入力の誤り
+    let mut out = Out::new();
+    assert_eq!(
+        add_with_button(&r, "user:jiro", "はい", &mut out),
+        HP_E_INVALID
+    );
+    assert!(out.text().contains("完了ボタン"));
+}
+
 #[test]
 fn find_with_no_hits_still_has_header_row() {
     let (_d, r) = root();
@@ -179,6 +236,7 @@ fn update_conflict_and_delete_codes() {
             id.p(),
             rev,
             title.p(),
+            null(),
             null(),
             null(),
             null(),
@@ -220,6 +278,7 @@ fn bad_input_returns_japanese_message_not_crash() {
     // 全部 null (VBA の vbNullString) でも落ちない
     let rc = unsafe {
         HatoPo_Add(
+            null(),
             null(),
             null(),
             null(),
