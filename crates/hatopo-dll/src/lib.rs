@@ -27,7 +27,7 @@ pub const HP_E_OFFLINE: i32 = -6;
 pub const HP_E_PANIC: i32 = -999;
 
 /// `HatoPo_Find` が返す表の見出し。VBA 側の列定数 (`HP_COL_*`) と順番を揃えること。
-const COLUMNS: [&str; 15] = [
+const COLUMNS: [&str; 16] = [
     "ID",
     "版",
     "宛先種別",
@@ -43,6 +43,7 @@ const COLUMNS: [&str; 15] = [
     "設定日時",
     "設定ユーザー",
     "設定端末",
+    "完了ボタン",
 ];
 
 fn code(e: &Error) -> i32 {
@@ -86,6 +87,19 @@ fn now() -> NaiveDateTime {
     Local::now().naive_local()
 }
 
+/// 完了ボタンの指定。空は「指定しない」(新規は宛先の種類の既定、変更は今のまま)。
+/// `1` / `0` / `true` / `false` (VBA の `True` を `CStr` した `真`・`偽` ではなく数字で渡すこと)。
+fn parse_button(s: &str) -> Result<Option<bool>, Error> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "" => Ok(None),
+        "1" | "-1" | "true" => Ok(Some(true)),
+        "0" | "false" => Ok(Some(false)),
+        other => Err(Error::Invalid(format!(
+            "完了ボタンの指定「{other}」が分かりません。1 (出す) か 0 (出さない)、空 (既定) にしてください。"
+        ))),
+    }
+}
+
 /// VBA から渡された文字列群を通知の入力にする。
 #[allow(clippy::too_many_arguments)]
 fn new_notice(
@@ -97,6 +111,7 @@ fn new_notice(
     url3: String,
     start: String,
     end: String,
+    complete_button: String,
 ) -> Result<NewNotice, Error> {
     Ok(NewNotice {
         title,
@@ -106,7 +121,7 @@ fn new_notice(
         urls: vec![url1, url2, url3],
         start_at: parse_when(&start, DayEdge::Start)?,
         end_at: parse_when(&end, DayEdge::End)?,
-        complete_button: None,
+        complete_button: parse_button(&complete_button)?,
     })
 }
 
@@ -154,6 +169,7 @@ fn table(list: &[Notice]) -> Result<VARIANT, Error> {
             ole_date(n.created_at),
             VARIANT::bstr(&n.created_by.user),
             VARIANT::bstr(&n.created_by.host),
+            VARIANT::bstr(if n.can_complete() { "1" } else { "0" }),
         ]);
     }
     VARIANT::grid(list.len() + 1, COLUMNS.len(), cells)
@@ -177,6 +193,8 @@ pub unsafe extern "system" fn HatoPo_Version(out: *mut VARIANT) -> i32 {
 ///
 /// `target` は `user:taro` / `device:PC-0123` / `broadcast`。日付は `2026/11/05` や `2026-11-05 09:00`。
 /// 空の開始日は今すぐ、空の終了日は完了まで。
+/// `complete_button` は HatoPo の通知画面に［完了］を出すか (`1` 出す / `0` 出さない / 空は既定。
+/// 既定はユーザー・端末宛てが出す、一斉は出さない)。
 ///
 /// # Safety
 /// 文字列引数は有効な BSTR か null、`out` は有効な VARIANT* か null。
@@ -192,6 +210,7 @@ pub unsafe extern "system" fn HatoPo_Add(
     url3: *const u16,
     start: *const u16,
     end: *const u16,
+    complete_button: *const u16,
     out: *mut VARIANT,
 ) -> i32 {
     guard(out, || unsafe {
@@ -204,6 +223,7 @@ pub unsafe extern "system" fn HatoPo_Add(
             bstr_arg(url3),
             bstr_arg(start),
             bstr_arg(end),
+            bstr_arg(complete_button),
         )?;
         let t = Target::parse(&bstr_arg(target))?;
         let made = Loft::new(bstr_arg(root)).add(&t, &n, &Origin::current(), now())?;
@@ -212,6 +232,7 @@ pub unsafe extern "system" fn HatoPo_Add(
 }
 
 /// 通知を書き換える。`revision` は `HatoPo_Find` で読んだ版 (0 で確かめない)。`result` に新しい版が入る。
+/// `complete_button` が空なら今の設定のまま。
 ///
 /// # Safety
 /// `HatoPo_Add` と同じ。
@@ -228,6 +249,7 @@ pub unsafe extern "system" fn HatoPo_Update(
     url3: *const u16,
     start: *const u16,
     end: *const u16,
+    complete_button: *const u16,
     out: *mut VARIANT,
 ) -> i32 {
     guard(out, || unsafe {
@@ -240,6 +262,7 @@ pub unsafe extern "system" fn HatoPo_Update(
             bstr_arg(url3),
             bstr_arg(start),
             bstr_arg(end),
+            bstr_arg(complete_button),
         )?;
         let updated = Loft::new(bstr_arg(root)).update(
             &bstr_arg(id),

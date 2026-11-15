@@ -20,12 +20,19 @@ Attribute VB_Name = "HatoPo"
 ' 【宛先の書き方】
 '   HP_User("taro")         … そのユーザー (ログオン名) に
 '   HP_Device("PC-0123")    … その PC に (誰がログオンしていても出る)
-'   HP_Broadcast()          … 全員に (利用者は完了できない。HP_Delete で消す)
+'   HP_Broadcast()          … 全員に (既定では利用者は完了できず、HP_Delete で消す。
+                              完了ボタンを出すと、押した人の画面だけ消える)
 '   HP_Me()                 … 自分に
 '
 ' 【日付】Date 型でも "2026/11/05 9:00" のような文字列でも渡せます。
 '   開始を省略すると今すぐ、終了を省略すると完了されるまで出し続けます。
 '   終了に日付だけを渡すと、その日いっぱい出します。
+'
+' 【完了ボタン】HP_Add / HP_Update の「完了ボタン」に True を渡すと、利用者の HatoPo の通知画面に
+'   [完了] を出し、False なら出しません。省略すると宛先の種類の既定 (ユーザー・端末宛ては出す、
+'   全員宛ては出さない)。HP_Update で省略すると今の設定のままです。
+'   全員宛てで出した場合、完了は押した人の画面だけ消え、通知そのものは残ります
+'   (管理画面で誰が完了したか見られます)。
 '
 ' 【失敗したとき】Err.Raise でエラーになります。Err.Description に理由が入ります。
 '   Err.Number - vbObjectError - 1000 が DLL の戻り値です (HP_E_* と比べられます)。
@@ -63,6 +70,7 @@ Public Const HP_COL_END As Long = 11
 Public Const HP_COL_CREATED As Long = 12
 Public Const HP_COL_CREATED_USER As Long = 13
 Public Const HP_COL_CREATED_HOST As Long = 14
+Public Const HP_COL_COMPLETE_BUTTON As Long = 15   ' "1" 完了ボタンを出す / "0" 出さない
 
 '------------------------------------------------------------------ 宣言部 ----
 ' 文字列は StrPtr() で UTF-16 のまま渡す。String のまま Declare に渡すと
@@ -78,14 +86,14 @@ Private Declare PtrSafe Function HatoPo_Add Lib "hatopo.dll" ( _
     ByVal root As LongPtr, ByVal target As LongPtr, ByVal title As LongPtr, _
     ByVal body As LongPtr, ByVal due As LongPtr, _
     ByVal url1 As LongPtr, ByVal url2 As LongPtr, ByVal url3 As LongPtr, _
-    ByVal startAt As LongPtr, ByVal endAt As LongPtr, _
+    ByVal startAt As LongPtr, ByVal endAt As LongPtr, ByVal completeButton As LongPtr, _
     ByRef result As Variant) As Long
 
 Private Declare PtrSafe Function HatoPo_Update Lib "hatopo.dll" ( _
     ByVal root As LongPtr, ByVal id As LongPtr, ByVal revision As Long, _
     ByVal title As LongPtr, ByVal body As LongPtr, ByVal due As LongPtr, _
     ByVal url1 As LongPtr, ByVal url2 As LongPtr, ByVal url3 As LongPtr, _
-    ByVal startAt As LongPtr, ByVal endAt As LongPtr, _
+    ByVal startAt As LongPtr, ByVal endAt As LongPtr, ByVal completeButton As LongPtr, _
     ByRef result As Variant) As Long
 
 Private Declare PtrSafe Function HatoPo_Delete Lib "hatopo.dll" ( _
@@ -141,6 +149,17 @@ Private Function WhenText(ByVal v As Variant) As String
     End If
 End Function
 
+' 完了ボタンの指定を DLL に渡す文字にする。True → "1" / False → "0" / 省略 → "" (既定)。
+Private Function ButtonText(ByVal v As Variant) As String
+    If IsMissing(v) Or IsEmpty(v) Or IsNull(v) Then
+        ButtonText = ""
+    ElseIf VarType(v) = vbBoolean Then
+        ButtonText = IIf(v, "1", "0")
+    Else
+        ButtonText = Trim$(CStr(v))
+    End If
+End Function
+
 '------------------------------------------------------------------ 宛先 ------
 Public Function HP_User(ByVal userName As String) As String
     HP_User = "user:" & userName
@@ -171,28 +190,32 @@ Public Function HP_Add(ByVal 宛先 As String, ByVal 件名 As String, _
         Optional ByVal 本文 As String = "", Optional ByVal 期限 As Variant, _
         Optional ByVal URL1 As String = "", Optional ByVal URL2 As String = "", _
         Optional ByVal URL3 As String = "", _
-        Optional ByVal 開始 As Variant, Optional ByVal 終了 As Variant) As String
-    Dim r As Variant, due As String, s As String, e As String
+        Optional ByVal 開始 As Variant, Optional ByVal 終了 As Variant, _
+        Optional ByVal 完了ボタン As Variant) As String
+    Dim r As Variant, due As String, s As String, e As String, b As String
     EnsureLoaded
-    due = WhenText(期限): s = WhenText(開始): e = WhenText(終了)
+    due = WhenText(期限): s = WhenText(開始): e = WhenText(終了): b = ButtonText(完了ボタン)
     Check HatoPo_Add(StrPtr(HATOPO_ROOT), StrPtr(宛先), StrPtr(件名), StrPtr(本文), _
-        StrPtr(due), StrPtr(URL1), StrPtr(URL2), StrPtr(URL3), StrPtr(s), StrPtr(e), r), _
+        StrPtr(due), StrPtr(URL1), StrPtr(URL2), StrPtr(URL3), StrPtr(s), StrPtr(e), _
+        StrPtr(b), r), _
         r, "HP_Add"
     HP_Add = CStr(r)
 End Function
 
 ' 通知を書き換える。版は HP_Find / HP_Get で読んだ HP_COL_REVISION の値 (0 で確かめない)。
-' 渡さなかった項目は空になる (開始だけは省略すると今の値を保つ)。戻り値は新しい版。
+' 渡さなかった項目は空になる (開始と完了ボタンは省略すると今の値を保つ)。戻り値は新しい版。
 Public Function HP_Update(ByVal id As String, ByVal 版 As Long, ByVal 件名 As String, _
         Optional ByVal 本文 As String = "", Optional ByVal 期限 As Variant, _
         Optional ByVal URL1 As String = "", Optional ByVal URL2 As String = "", _
         Optional ByVal URL3 As String = "", _
-        Optional ByVal 開始 As Variant, Optional ByVal 終了 As Variant) As Long
-    Dim r As Variant, due As String, s As String, e As String
+        Optional ByVal 開始 As Variant, Optional ByVal 終了 As Variant, _
+        Optional ByVal 完了ボタン As Variant) As Long
+    Dim r As Variant, due As String, s As String, e As String, b As String
     EnsureLoaded
-    due = WhenText(期限): s = WhenText(開始): e = WhenText(終了)
+    due = WhenText(期限): s = WhenText(開始): e = WhenText(終了): b = ButtonText(完了ボタン)
     Check HatoPo_Update(StrPtr(HATOPO_ROOT), StrPtr(id), 版, StrPtr(件名), StrPtr(本文), _
-        StrPtr(due), StrPtr(URL1), StrPtr(URL2), StrPtr(URL3), StrPtr(s), StrPtr(e), r), _
+        StrPtr(due), StrPtr(URL1), StrPtr(URL2), StrPtr(URL3), StrPtr(s), StrPtr(e), _
+        StrPtr(b), r), _
         r, "HP_Update"
     HP_Update = CLng(r)
 End Function

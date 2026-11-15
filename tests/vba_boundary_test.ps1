@@ -30,9 +30,9 @@ public static class Hp {
     const string L = @"$dll";
     [DllImport(L)] public static extern int HatoPo_Version([MarshalAs(UnmanagedType.Struct)] ref object r);
     [DllImport(L)] public static extern int HatoPo_Add(IntPtr root, IntPtr target, IntPtr title, IntPtr body, IntPtr due,
-        IntPtr u1, IntPtr u2, IntPtr u3, IntPtr start, IntPtr end, [MarshalAs(UnmanagedType.Struct)] ref object r);
+        IntPtr u1, IntPtr u2, IntPtr u3, IntPtr start, IntPtr end, IntPtr btn, [MarshalAs(UnmanagedType.Struct)] ref object r);
     [DllImport(L)] public static extern int HatoPo_Update(IntPtr root, IntPtr id, int rev, IntPtr title, IntPtr body, IntPtr due,
-        IntPtr u1, IntPtr u2, IntPtr u3, IntPtr start, IntPtr end, [MarshalAs(UnmanagedType.Struct)] ref object r);
+        IntPtr u1, IntPtr u2, IntPtr u3, IntPtr start, IntPtr end, IntPtr btn, [MarshalAs(UnmanagedType.Struct)] ref object r);
     [DllImport(L)] public static extern int HatoPo_Delete(IntPtr root, IntPtr id, [MarshalAs(UnmanagedType.Struct)] ref object r);
     [DllImport(L)] public static extern int HatoPo_Find(IntPtr root, IntPtr kind, IntPtr name, IntPtr kw, [MarshalAs(UnmanagedType.Struct)] ref object r);
     [DllImport(L)] public static extern int HatoPo_Get(IntPtr root, IntPtr id, [MarshalAs(UnmanagedType.Struct)] ref object r);
@@ -55,14 +55,15 @@ try {
 
     $r = $null
     $rc = [Hp]::HatoPo_Add((B $loft), (B 'user:Taro'), (B '工数表の入力 🕊️'), (B "10月分`r`n2 行目"), (B '2026/11/05'),
-        (B '\server\共有\工数表.xlsm'), $Z, $Z, $Z, (B '2026-12-31'), [ref]$r)
+        (B '\server\共有\工数表.xlsm'), $Z, $Z, $Z, (B '2026-12-31'), $Z, [ref]$r)
     Assert-That ($rc -eq 0) 'HatoPo_Add 成功' "rc=$rc $r"
     $id = [string]$r
 
     $r = $null
     $rc = [Hp]::HatoPo_Find((B $loft), $Z, (B 'taro'), $Z, [ref]$r)
     Assert-That ($rc -eq 0) 'HatoPo_Find 成功' "rc=$rc"
-    Assert-That ($r.Rank -eq 2 -and $r.GetLength(0) -eq 2 -and $r.GetLength(1) -eq 15) '見出し + 1 行 x 15 列'
+    Assert-That ($r.Rank -eq 2 -and $r.GetLength(0) -eq 2 -and $r.GetLength(1) -eq 16) '見出し + 1 行 x 16 列'
+    Assert-That ($r[0, 15] -eq '完了ボタン' -and $r[1, 15] -eq '1') 'ユーザー宛ては既定で完了ボタンあり'
     Assert-That ($r[0, 0] -eq 'ID' -and $r[1, 0] -eq $id) 'ID 列'
     Assert-That ($r[1, 4] -eq '工数表の入力 🕊️') '日本語と絵文字が化けない' "$($r[1,4])"
     Assert-That ($r[1, 5] -eq "10月分`n2 行目") '改行は LF にそろう'
@@ -72,17 +73,41 @@ try {
     Assert-That ($r[1, 1] -eq 1) '版は 1'
 
     $r = $null
-    $rc = [Hp]::HatoPo_Update((B $loft), (B $id), 1, (B '更新後'), $Z, $Z, $Z, $Z, $Z, $Z, $Z, [ref]$r)
+    $rc = [Hp]::HatoPo_Update((B $loft), (B $id), 1, (B '更新後'), $Z, $Z, $Z, $Z, $Z, $Z, $Z, $Z, [ref]$r)
     Assert-That ($rc -eq 0 -and $r -eq 2) 'HatoPo_Update で版が 2 に' "rc=$rc $r"
     $r = $null
-    $rc = [Hp]::HatoPo_Update((B $loft), (B $id), 1, (B '古い版から'), $Z, $Z, $Z, $Z, $Z, $Z, $Z, [ref]$r)
+    $rc = [Hp]::HatoPo_Update((B $loft), (B $id), 1, (B '古い版から'), $Z, $Z, $Z, $Z, $Z, $Z, $Z, $Z, [ref]$r)
     Assert-That ($rc -eq -4 -and "$r" -match '他の人が先に変更') '古い版は HP_E_CONFLICT' "rc=$rc"
 
     $r = $null
     Assert-That ([Hp]::HatoPo_Get((B $loft), (B $id), [ref]$r) -eq 0 -and $r[1, 4] -eq '更新後') 'HatoPo_Get'
 
+    # 完了ボタン: 一斉は既定で出さない / 指定すれば出せる / 空の更新は今のまま
     $r = $null
-    $rc = [Hp]::HatoPo_Add((B $loft), (B 'group:x'), (B 'x'), $Z, $Z, $Z, $Z, $Z, $Z, $Z, [ref]$r)
+    $rc = [Hp]::HatoPo_Add((B $loft), (B 'broadcast'), (B '全員へ'), $Z, $Z, $Z, $Z, $Z, $Z, $Z, $Z, [ref]$r)
+    Assert-That ($rc -eq 0) '一斉の作成' "rc=$rc $r"
+    $bid = [string]$r
+    $r = $null
+    [void][Hp]::HatoPo_Get((B $loft), (B $bid), [ref]$r)
+    Assert-That ($r[1, 15] -eq '0') '一斉は既定で完了ボタンなし'
+    $r = $null
+    $rc = [Hp]::HatoPo_Update((B $loft), (B $bid), 1, (B '全員へ'), $Z, $Z, $Z, $Z, $Z, $Z, $Z, (B '1'), [ref]$r)
+    Assert-That ($rc -eq 0) '完了ボタンを出す' "rc=$rc $r"
+    $r = $null
+    [void][Hp]::HatoPo_Get((B $loft), (B $bid), [ref]$r)
+    Assert-That ($r[1, 15] -eq '1') '一斉でも完了ボタンを出せる'
+    $r = $null
+    [void][Hp]::HatoPo_Update((B $loft), (B $bid), 0, (B '全員へ'), $Z, $Z, $Z, $Z, $Z, $Z, $Z, $Z, [ref]$r)
+    $r = $null
+    [void][Hp]::HatoPo_Get((B $loft), (B $bid), [ref]$r)
+    Assert-That ($r[1, 15] -eq '1') '更新で空なら完了ボタンは今のまま'
+    $r = $null
+    $rc = [Hp]::HatoPo_Add((B $loft), (B 'user:a'), (B 'x'), $Z, $Z, $Z, $Z, $Z, $Z, $Z, (B 'はい'), [ref]$r)
+    Assert-That ($rc -eq -2 -and "$r" -match '完了ボタン') '分からない指定は HP_E_INVALID' "rc=$rc $r"
+    [void][Hp]::HatoPo_Delete((B $loft), (B $bid), [ref]$r)
+
+    $r = $null
+    $rc = [Hp]::HatoPo_Add((B $loft), (B 'group:x'), (B 'x'), $Z, $Z, $Z, $Z, $Z, $Z, $Z, $Z, [ref]$r)
     Assert-That ($rc -eq -2 -and "$r" -match '宛先の種類') '誤った宛先は HP_E_INVALID' "rc=$rc $r"
 
     $r = 'old value'
@@ -95,7 +120,7 @@ try {
     Assert-That ($rc -eq 0 -and $r.GetLength(0) -eq 1) '0 件でも見出し行がある'
 
     $r = $null
-    $rc = [Hp]::HatoPo_Add((B '\no-such-server-hatopo\x'), (B 'user:a'), (B 'x'), $Z, $Z, $Z, $Z, $Z, $Z, $Z, [ref]$r)
+    $rc = [Hp]::HatoPo_Add((B '\no-such-server-hatopo\x'), (B 'user:a'), (B 'x'), $Z, $Z, $Z, $Z, $Z, $Z, $Z, $Z, [ref]$r)
     Assert-That ($rc -eq -6) '繋がらない鳩の巣は HP_E_OFFLINE' "rc=$rc"
 }
 finally {
